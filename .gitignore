@@ -5,3 +5,7 @@ build/
 dist/
 .venv/
 venv/
+
+# 论文原文只作本地参考，不入库
+docs/papers/
+*.pdf

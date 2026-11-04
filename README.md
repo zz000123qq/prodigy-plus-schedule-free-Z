@@ -67,7 +67,7 @@ for epoch in range(epochs):
 | `d0` | `1e-6` | Prodigy 的初始学习率猜测。LR 涨不上去试 `1e-5` / `1e-4`，一直偏大试 `1e-7` |
 | `d_coef` | `1.0` | 调 LR 的首选旋钮，`0.5` / `2.0` 都常用 |
 | `d_limiter` | `True` | 限制 `d` 每步涨幅（不超过 2 的 0.25 次方倍） |
-| `prodigy_steps` | `0` | 大于 0 时在第 N 步**冻结** `d` 并释放 Prodigy 专用显存。长跑 / 扩散模型常用 |
+| `prodigy_steps` | `0` | 大于 0 时在第 N 步**冻结** `d` 并释放 Prodigy 专用显存（实测 33.6M 参数 bf16：75.7 降到 64.1 MB，省 15%）。长跑 / 扩散模型常用 |
 | `schedulefree_c` | `0` | Refined SF-Adam 的平均强度。`0` = 关闭（走原始 SF 规则）。小 batch 短跑试 6 到 12，长跑试 50 到 200 |
 | `c_warmup` | `0` | ScheduleFree+ 的延迟平均：前 N 步不平均（`y` 直接跟随 `z`）。论文建议取约 2 倍 LR warmup 长度。只多一个计数器，零显存 |
 | `schedulefree_r` | `0.0` | 平均权重改成 `k 的 r 次方 乘 dlr^2`。**论文只在超过 30B token 的长跑用 r=1，短跑用 r=1 反而略差**，所以默认 0 |
@@ -134,14 +134,15 @@ for epoch in range(epochs):
 
 33.6M 参数（两个 4096 x 4096 的 Linear），只测 `opt.step()`：
 
-| 优化器 | step 耗时 |
-|---|---|
-| `torch.optim.AdamW` | 7.36 ms |
-| `torch.optim.AdamW(foreach=True)` | 7.49 ms |
-| `torch.optim.AdamW(fused=True)` | 3.84 ms |
-| **本库（SF 默认）** | **10.57 ms** |
+| 优化器 | step 耗时 | 相对 AdamW |
+|---|---|---|
+| `torch.optim.AdamW` | 7.38 ms | 1.00x |
+| `torch.optim.AdamW(foreach=True)` | 7.49 ms | 1.01x |
+| `torch.optim.AdamW(fused=True)` | 3.97 ms | 0.54x |
+| **本库（SF 默认，即默认配置）** | **11.09 ms** | **1.50x** |
+| 本库（`use_schedulefree=False`） | 9.95 ms | 1.35x |
 
-约为普通 AdamW 的 **1.44 倍**、fused AdamW 的 **2.75 倍**。差距来自每参数约 20 次全量张量遍历（AdamW 约 5 次），这是算法本身（SF 的 y/z 双缓冲 + Prodigy 统计量）决定的。
+约为普通 AdamW 的 **1.5 倍**、fused AdamW 的 **2.8 倍**（同机重复测量有 5% 左右波动）。差距来自每参数约 20 次全量张量遍历（AdamW 约 5 次），这是算法本身（SF 的 y/z 双缓冲 + Prodigy 统计量）决定的。
 
 > 注意：小模型上 `step` 可能占到总时间 70% 以上，那是 Windows WDDM 每 kernel 开销高放大的结果。真实 UNet / SDXL LoRA 训练里 fwd+bwd 会占绝对多数，别拿这个比例外推。
 
