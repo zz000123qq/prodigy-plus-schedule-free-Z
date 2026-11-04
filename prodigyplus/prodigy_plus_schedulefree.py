@@ -133,6 +133,13 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
             Stops the optimiser from running the normal step method. Set to True if using fused backward pass. Really only
             needed for scripts and UIs that call the regular step method even when using fused backward pass (OneTrainer).
             (default: False)
+        sync_d_stats (boolean):
+            Average the running d statistics across ranks each step. Required for sharded parallelism
+            (FSDP / ZeRO-2/3), where each rank only holds a slice of the parameters and would otherwise
+            converge on a different d. Under plain DDP the gradients are already averaged in backward, so
+            the statistics are identical on every rank; leave at True (two tiny collectives per step) or set
+            to False to skip them. No effect outside a distributed run.
+            (default: True)
         use_cautious (boolean):
             Experimental. Perform "cautious" updates, as proposed in https://arxiv.org/pdf/2411.16085. Modifies
             the update to isolate and boost values that align with the current gradient. Note that we do not have
@@ -180,6 +187,7 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
                  use_speed=False,
                  stochastic_rounding=True,
                  fused_back_pass=False,
+                 sync_d_stats=True,
                  use_cautious=False,
                  use_grams=False,
                  use_adopt=False,
@@ -205,6 +213,7 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
                         use_speed=use_speed,
                         stochastic_rounding=stochastic_rounding,
                         fused_back_pass=fused_back_pass,
+                        sync_d_stats=sync_d_stats,
                         use_cautious=use_cautious,
                         use_grams=use_grams,
                         use_adopt=use_adopt,

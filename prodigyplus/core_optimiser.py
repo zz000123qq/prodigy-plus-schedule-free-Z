@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 from statistics import harmonic_mean
 
 class CoreOptimiser(torch.optim.Optimizer):
@@ -277,6 +278,33 @@ class CoreOptimiser(torch.optim.Optimizer):
         return (dlr, beta2, rho_t)
 
     @torch.no_grad()
+    def sync_d_stats_(self, group, numerator, denom):
+        """Average the running d statistics across ranks.
+
+        Under plain DDP the gradients have already been all-reduced in backward,
+        so every rank computes identical statistics and this is a no-op in effect
+        (it costs two small collectives; set sync_d_stats=False to skip them).
+
+        Under FSDP/ZeRO each rank only holds a shard of the parameters, so the
+        local statistics differ and d would drift apart per rank, giving each
+        shard a different effective learning rate. Averaging keeps d identical
+        everywhere.
+        """
+        if not group.get('sync_d_stats', True):
+            return
+        if not dist.is_available() or not dist.is_initialized():
+            return
+
+        world_size = dist.get_world_size()
+        if world_size <= 1:
+            return
+
+        dist.all_reduce(numerator, op=dist.ReduceOp.SUM)
+        dist.all_reduce(denom, op=dist.ReduceOp.SUM)
+        numerator.div_(world_size)
+        denom.div_(world_size)
+
+    @torch.no_grad()
     def update_d_stats_and_reset(self, group):
         k = group['k']
         prodigy_steps = group['prodigy_steps']
@@ -288,6 +316,7 @@ class CoreOptimiser(torch.optim.Optimizer):
         _, _, beta3 = self.get_betas(group)
 
         running_d_numerator, running_d_denom = self.get_running_values_for_group(group)
+        self.sync_d_stats_(group, running_d_numerator, running_d_denom)
 
         max_d_numerator = group['max_d_numerator']
         d_numerator = group['d_numerator']
