@@ -173,7 +173,7 @@ def load(root):
 
 # ------------------------------------------------------------------- runner
 
-def run(cls, arm, seed, steps, sched, train_x, eval_x, eval_batch=64, log_every=0):
+def run(cls, arm, seed, steps, sched, train_x, eval_x, batch=32):
     torch.manual_seed(seed)
     model = MiniUNet().cuda()
     opt = cls(model.parameters(), lr=1.0, **arm["kw"])
@@ -184,7 +184,7 @@ def run(cls, arm, seed, steps, sched, train_x, eval_x, eval_batch=64, log_every=
     for step in range(steps):
         model.train()
         opt.train()
-        idx = torch.randint(0, train_x.shape[0], (32,), device="cuda", generator=g)
+        idx = torch.randint(0, train_x.shape[0], (batch,), device="cuda", generator=g)
         x0 = train_x[idx]
         xt, eps, t = sched.sample(x0, generator=g)
         opt.zero_grad(set_to_none=True)
@@ -204,6 +204,7 @@ def run(cls, arm, seed, steps, sched, train_x, eval_x, eval_batch=64, log_every=
 
     tail = losses[-100:]
     return {
+        "d": opt.param_groups[0]["d"],
         "eval": eval_loss,
         "train_tail": sum(tail) / len(tail),
         "train_std": float(torch.tensor(tail).std()),
@@ -217,6 +218,7 @@ def main():
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--steps", type=int, default=800)
     ap.add_argument("--seeds", type=int, default=3)
+    ap.add_argument("--batch", type=int, default=32)
     args = ap.parse_args()
 
     steps = 150 if args.quick else args.steps
@@ -246,19 +248,20 @@ def main():
     if args.quick:
         arms = arms[:2]
 
-    print(f"steps={steps} seeds={len(seeds)} params={sum(p.numel() for p in MiniUNet().parameters())/1e6:.2f}M")
-    print(f"{'配置':<28}{'eval loss':>12}{'±std':>9}{'train tail':>12}{'loss std':>10}{'秒':>7}")
-    print("-" * 80)
+    print(f"steps={steps} seeds={len(seeds)} batch={args.batch} params={sum(p.numel() for p in MiniUNet().parameters())/1e6:.2f}M")
+    print(f"{'配置':<28}{'eval loss':>12}{'±std':>9}{'train tail':>12}{'loss std':>10}{'d':>10}{'秒':>7}")
+    print("-" * 92)
 
     for name, cls, arm in arms:
-        res = [run(cls, arm, s, steps, sched, train_x, eval_x) for s in seeds]
+        res = [run(cls, arm, s, steps, sched, train_x, eval_x, batch=args.batch) for s in seeds]
         ev = [r["eval"] for r in res]
         mean = sum(ev) / len(ev)
         sd = (sum((x - mean) ** 2 for x in ev) / len(ev)) ** 0.5
         tt = sum(r["train_tail"] for r in res) / len(res)
         ls = sum(r["train_std"] for r in res) / len(res)
         secs = sum(r["secs"] for r in res) / len(res)
-        print(f"{name:<28}{mean:>12.5f}{sd:>9.5f}{tt:>12.5f}{ls:>10.4f}{secs:>7.1f}")
+        dd = sum(r["d"] for r in res) / len(res)
+        print(f"{name:<28}{mean:>12.5f}{sd:>9.5f}{tt:>12.5f}{ls:>10.4f}{dd:>10.3e}{secs:>7.1f}")
 
     # Gradient SNR: how noisy is this objective, really?
     torch.manual_seed(0)
