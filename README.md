@@ -236,12 +236,19 @@ for epoch in range(epochs):
 ## 八、开发
 
 ```bash
-python tests/test_audit_fixes.py      # 14 条用例，不需要 pytest
+python tests/test_audit_fixes.py      # 15 条用例，不需要 pytest
 ```
 
-覆盖：cautious 掩码、SPEED 同步次数、FBP 计数器、orthograd 非连续张量、`out=` 与原地路径等价、ckp1 = 1/k、`c_warmup` 期间 y 等于 z、`schedulefree_r` 的权重变化、train/eval 往返、单卡无进程组、CUDA bf16 整步、参数校验。
+覆盖：cautious 掩码、SPEED 同步次数、FBP 计数器、orthograd 非连续张量、`out=` 与原地路径等价、ckp1 = 1/k、`c_warmup` 期间 y 等于 z、`schedulefree_r` 的权重变化、train/eval 往返、单卡无进程组、`use_adopt` 与 SF 组合时的告警、CUDA bf16 整步、参数校验。
 
-`tools/logic_checks/` 下是两份不依赖 torch 的逻辑复现脚本（步计数器、`weight_sum`），用来在没装 torch 的环境里验证行为契约。
+CI 在 `.github/workflows/tests.yml`：Python 3.10 / 3.12 / 3.13 加 CPU 版 torch，跑这套用例、两个逻辑脚本和一次 wheel 构建，push 即触发。
+
+另外两份工具：
+
+| 路径 | 用途 |
+|---|---|
+| `tools/logic_checks/` | 不依赖 torch 的逻辑复现（步计数器、`weight_sum`），用来在没装 torch 的环境里验证行为契约 |
+| `tools/experiments/a1_denoise.py` | 端到端对比实验，见 5.4 节。约 15 分钟 |
 
 **未验证**：多卡 `sync_d_stats`——没有多卡环境。
 

@@ -4,7 +4,7 @@
 >
 > 基线：上游 `LoganBooker/prodigy-plus-schedule-free` v2.0.1（`338cf40`，2025-09 停更）。
 > 本分支：`audit-fix`，版本 `2.1.0`，远端 `zz000123qq/prodigy-plus-schedule-free-Z`。
-> 测试：`python tests/test_audit_fixes.py`，14 条，本机 Python 3.13 + torch 2.9.0。
+> 测试：`python tests/test_audit_fixes.py`，15 条，本机 Python 3.13 + torch 2.9.0；CI 见 `.github/workflows/tests.yml`。
 
 ---
 
@@ -100,6 +100,9 @@ python tools/logic_checks/sim_weight_sum.py
 
 # 构建检查
 python -m pip wheel . --no-deps --no-build-isolation -w /tmp/pkgtest
+
+# 端到端对比（迷你 UNet 去噪，约 15 分钟）
+python tools/experiments/a1_denoise.py --steps 600 --seeds 3 --batch 8
 ```
 
 改任何影响数值的代码前，先按"逐位对照旧实现"的方式验等价：用 `git show <commit>:prodigyplus/xxx.py` 导出旧版到临时目录，两版各跑 25 步比对参数张量，FP32 / BF16 与各种开关组合都要覆盖。
