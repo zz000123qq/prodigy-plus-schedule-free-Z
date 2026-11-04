@@ -93,7 +93,7 @@
 | 裸 `except:` | `core_optimiser.py:554, 567` | → `except Exception:` |
 | `__init__.py` 导入路径错（靠碰巧可用） | `prodigyplus/__init__.py` | → `from .core_optimiser import CoreOptimiser`，并导出 `__version__` |
 | `python_requires='>=3.4'` | `setup.py:29` | → `>=3.9` |
-| `pyproject.toml` 无 `[project]` 元数据 | `pyproject.toml` | **未加 `[project]` 表**：本机无 setuptools，无法验证构建，贸然改会造成 install 失败。改为收紧 `requires = ["setuptools>=61"]` 并补 `packages.find` 配置，`setup.py` 仍是元数据唯一来源 |
+| `pyproject.toml` 无 `[project]` 元数据 | `pyproject.toml` | **已补全 PEP 621 `[project]` 表**，version / readme 走 `dynamic`（`version` 从 `prodigyplus/_version.py` AST 静态解析，构建时不会 import 包、不需要 torch）。`setup.py` 退化为 `setup()` 空壳以兼容旧调用。实测 `pip wheel` 构建通过，产物 `prodigy_plus_schedule_free-2.1.0-py3-none-any.whl` |
 | README 中 `eps=1e8` | `README.md` | → `1e-8`；补 v2.1.0 变更日志 |
 
 ---
@@ -123,23 +123,25 @@
 
 ---
 
-## 五、执行阶段与提交粒度
+## 五、实际提交记录
 
-每个修复一个 commit，便于单独回滚：
+每个修复一个 commit，便于单独回滚。分支 `audit-fix`，tag `v2.1.0-audit`。
 
-| # | commit message | 涉及文件 |
-|---|---|---|
-| 0 | `docs: add improvement plan` | `docs/IMPROVEMENT-PLAN.md` |
-| 1 | `fix(cautious): apply the mask instead of discarding it` | `prodigy_plus_schedulefree.py` |
-| 2 | `perf(speed): keep d-stat scalars on device, drop per-param syncs` | `core_optimiser.py` |
-| 3 | `fix(fbp): self-heal parameter counter when params have no grad` | `core_optimiser.py` |
-| 4 | `fix(orthograd): clamp instead of add epsilon, use reshape for non-contiguous` | `core_optimiser.py` |
-| 5 | `feat(dist): optional all_reduce for d stats under sharded parallelism` | `core_optimiser.py` |
-| 6 | `chore: unify version, fix imports, metadata, readme typo` | `setup.py` / `pyproject.toml` / `__init__.py` / `README.md` |
+| commit | 内容 |
+|---|---|
+| `e68f51f` | `docs:` 计划书 + `.gitignore` |
+| `8a12259` | `fix(cautious):` 死掩码 → `grad.copy_(exp_avg).mul_(mask)` |
+| `c380b19` | `perf(speed):` d-stat 标量留在 device，去掉每参数同步 |
+| `69d9e0d` | `fix(orthograd):` `reshape` 替代 `view`（NaN 一说已证伪，见 §八） |
+| `52125e3` | `fix(fbp):` 步边界自愈 |
+| `86a9dc2` | `feat(dist):` `sync_d_stats` |
+| `da626c4` | `chore:` 版本单一来源、导入、元数据、README |
+| `0085c6b` | `test:` 9 条真实张量回归 + orthograd 结论更正 |
+| 本次 | `fix(packaging):` 补全 PEP 621 `[project]`，修复上一提交造成的构建失败 |
 
-全部改完后打 tag `v2.1.0-audit`。
-
----
+> 注：`da626c4` 里的 `[tool.setuptools]` 在缺少 `[project]` 表时会触发 setuptools 82 的
+> `ValueError: project must contain ['version']`，构建直接失败。补全 `[project]` 后
+> `pip wheel` 实测通过。**这是先改后验的代价，记在这里当教训。**
 
 ## 六、L2 待办：对齐 ScheduleFree+（不在本次范围）
 
@@ -171,3 +173,27 @@ main（上游基线，只读）
 - 提交规范：`fix/` `perf/` `feat/` `chore/` `docs/` 前缀。
 - 不 rebase、不 force push，保持线性历史。
 - 不向上游提 PR。
+
+---
+
+## 八、执行状态（2026-11-04）
+
+| 项 | 计划 | 状态 | 证据 |
+|---|---|---|---|
+| T1 `use_cautious` 死掩码 | 修 | ✅ 已修 + 实测 | `zero_frac` 0.000 → 0.679；步长 5.48e-4 → 1.74e-2（旧版仅为 unmasked 对照的 1/20） |
+| T2 SPEED 每参数 `.item()` | 合并 | ✅ 已修 + 实测 | 单步同步次数 14 → 1（4 个参数） |
+| T3 FBP 参数计数器 | 修 | ✅ 已修 + 实测 | 9/10 有梯度时 `k` 每轮 +1 |
+| T4 `orthograd` 非连续张量 | 修 | ✅ 已修 + 实测 | `channels_last` 权重：`RuntimeError` → 正常。（原列的 NaN 一说不成立，见下表） |
+| T5 `sync_d_stats` | 实现、不验证 | ⚠️ 已实现，仅单卡冒烟 | 单卡 `dist` 未初始化时为空操作，整步跑通；按约定不做多卡验证 |
+| T6 工程元数据 | 全部 | ✅ 已完成 | `pip wheel` 构建通过；import 正常；version 2.1.0 |
+| 回归测试 | 建 `tests/` | ✅ 9 条 | `python tests/test_audit_fixes.py` → 9/9，且逐条对照 v2.0.1 验过判别力 |
+| L2 ScheduleFree+ 六项 | 不做 | ⬜ 未开始 | 见 §六，需单独立项 |
+
+**执行中修正的计划内容**（原计划有误，已按实测改写）：
+
+| 原计划 | 实际情况 |
+|---|---|
+| §2.1 `weight_sum` 作用域错 → `ckp1 ∝ 1/(n·k)`，要重构进 `state[p]` | **误报**。链式赋值右侧读的是本 step 内不变的 `group['weight_sum']`，实测 `ckp1 = 1/k`、与参数个数无关。**未做，也不该做** |
+| T4 `add_(1e-30)` 会溢出成 `inf` → NaN | **不成立**。scale 1e0~1e9 输出全部有限；且 `add_` 与 `clamp_min` 在 `norm=0` 时完全等价，该改动仅为写法统一 |
+| `setup.py` 作为元数据唯一来源 | **已反转**。PEP 621 要求 `[project]` 表存在，`setup.py` 改为兼容空壳 |
+

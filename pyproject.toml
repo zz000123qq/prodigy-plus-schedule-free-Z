@@ -1,13 +1,32 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
-# setup.py remains the source of truth for the metadata so that existing
-# `python setup.py` style invocations keep working. Only packaging config lives
-# here.
-[tool.setuptools]
-include-package-data = false
+[project]
+name = "prodigy-plus-schedule-free"
+description = "Automatic learning rate optimiser based on Prodigy and Schedule-Free"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+keywords = ["artificial intelligence", "deep learning", "optimizers"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["torch>=2.0"]
+dynamic = ["version", "readme"]
+
+[project.urls]
+Homepage = "https://github.com/LoganBooker/prodigy-plus-schedule-free"
+
+[tool.setuptools.dynamic]
+# Resolved from the module AST, so building never imports the package
+# (which would pull in torch).
+version = { attr = "prodigyplus._version.__version__" }
+readme = { file = ["README.md"], content-type = "text/markdown" }
 
 [tool.setuptools.packages.find]
 include = ["prodigyplus*"]
-exclude = ["tools*", "docs*"]
+
+[tool.setuptools]
+include-package-data = false

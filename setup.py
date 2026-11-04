@@ -1,42 +1,11 @@
-import re
-from pathlib import Path
+"""Legacy shim.
 
-from setuptools import find_packages, setup
+All project metadata now lives in pyproject.toml (PEP 621), including the
+version, which is resolved from prodigyplus/_version.py without importing the
+package. This file only exists so that `python setup.py ...` style invocations
+keep working.
+"""
 
-here = Path(__file__).parent
-README = (here / "README.md").read_text(encoding="utf-8")
+from setuptools import setup
 
-# Read the version without importing the package: importing it would pull in torch
-# at build time.
-version = re.search(
-    r"""__version__\s*=\s*["']([^"']+)["']""",
-    (here / "prodigyplus" / "_version.py").read_text(encoding="utf-8"),
-).group(1)
-
-setup(
-  name = 'prodigy-plus-schedule-free',
-  packages = find_packages(exclude=['tools*']),
-  version = version,
-  license='Apache-2.0',
-  description = 'Automatic learning rate optimiser based on Prodigy and Schedule-Free',
-  author = 'Logan Booker',
-  author_email = 'me@loganbooker.dev',
-  long_description=README,
-  long_description_content_type = 'text/markdown',
-  url = 'https://github.com/LoganBooker/prodigy-plus-schedule-free',
-  keywords = [
-    'artificial intelligence',
-    'deep learning',
-    'optimizers'
-  ],
-  install_requires=[
-    'torch>=2.0'
-  ],
-  classifiers=[
-    "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
-    "License :: OSI Approved :: Apache Software License",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-  ],
-  python_requires='>=3.9',
-)
+setup()
