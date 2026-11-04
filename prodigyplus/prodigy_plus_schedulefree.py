@@ -335,6 +335,12 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
 
             exp_avg = self.update_first_moment(state, group, grad, beta1)
 
+            # The cautious/grams variants have to build the direction in `grad`
+            # because they combine two tensors. The plain path does not: it can
+            # write the update straight from the momentum into the grad buffer,
+            # which saves copying the momentum in first (one full read + write
+            # per parameter per step).
+            masked = False
             if group['use_cautious']:
                 mask = grad.mul(exp_avg).sign_().clamp_min_(0)
                 mask.div_(mask.mean().clamp(min=1e-3))
@@ -343,14 +349,31 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
                 # update from O(1) into O(|grad|).
                 grad.copy_(exp_avg).mul_(mask)
                 del mask
+                masked = True
             elif group['use_grams']:
                 mask = exp_avg.abs()
                 grad.sign_().mul_(mask)
                 del mask
-            else:
+                masked = True
+            elif use_adopt:
                 grad.copy_(exp_avg)
 
-            update = grad if use_adopt else self.update_(grad, denom, group, y)
+            if use_adopt:
+                update = grad
+            elif masked:
+                update = self.update_(grad, denom, group, y)
+            elif exp_avg.dtype == grad.dtype:
+                # Writing straight into the grad buffer skips one full read+write of
+                # the tensor. Only safe when the momentum has the same dtype as the
+                # buffer: with out= PyTorch divides in the common dtype of the
+                # *inputs*, so a bf16 momentum over a bf16 denominator would be
+                # computed in bf16 and then upcast, losing a ulp versus the copy
+                # route (which always had an fp32 numerator).
+                update = self.update_(exp_avg, denom, group, y, out=grad)
+            else:
+                grad.copy_(exp_avg)
+                update = self.update_(grad, denom, group, y)
+
             del denom
 
         if update is not None:

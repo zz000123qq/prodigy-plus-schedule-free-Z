@@ -516,7 +516,14 @@ class CoreOptimiser(torch.optim.Optimizer):
                 p0 = state.pop('p0')
                 del p0
 
-    def update_(self, num, denom, group, w):
+    def update_(self, num, denom, group, w, out=None):
+        """Turn `num` into a parameter update.
+
+        `out` writes the result into a caller-supplied buffer instead of
+        overwriting `num`. That lets the caller skip a full copy of the momentum
+        into the gradient buffer first: one read and one write of the whole
+        tensor per parameter per step. The maths is identical either way.
+        """
         if group['use_focus']:
             # FOCUS: First Order Concentrated Updating Scheme: https://arxiv.org/pdf/2501.12243
             gamma = 0.1
@@ -525,7 +532,10 @@ class CoreOptimiser(torch.optim.Optimizer):
             # update = torch.sign(num) + gamma * torch.sign(w - denom)
 
             denom = denom.sub_(w).sign_().mul_(-gamma)
-            update = num.sign_().add_(denom)
+            if out is None:
+                update = num.sign_().add_(denom)
+            else:
+                update = torch.sign(num, out=out).add_(denom)
         else:
             d, eps = group['d'], group['eps']
 
@@ -537,9 +547,16 @@ class CoreOptimiser(torch.optim.Optimizer):
                 # b = 1, a = 1 / arctan(1) = ~1.27. Page 35 of paper. This
                 # clips most updates to ~2.0
                 a = 1.2732395
-                update = num.atan2_(denom).mul_(a)
+                if out is None:
+                    update = num.atan2_(denom).mul_(a)
+                else:
+                    update = torch.atan2(num, denom, out=out).mul_(a)
             else:
-                update = num.div_(denom.add_(d * eps))
+                denom.add_(d * eps)
+                if out is None:
+                    update = num.div_(denom)
+                else:
+                    update = torch.div(num, denom, out=out)
 
         return update
 

@@ -183,6 +183,37 @@ def test_runs_without_process_group():
     assert k == 4
 
 
+# ------------------------------------------------------- update buffer reuse
+
+def test_update_out_matches_inplace_path():
+    """update_(..., out=buf) must be bit-identical to update_(num, ...) in place.
+
+    The fused path exists purely to skip a full copy of the momentum; if the two
+    ever disagree the shortcut has to go.
+    """
+    for eps in (1e-8, None):
+        torch.manual_seed(0)
+        model = _make_model()
+        opt = ProdigyPlusScheduleFree(
+            model.parameters(), lr=1.0, d0=1e-2, eps=eps,
+            use_schedulefree=False, use_stableadamw=False,
+        )
+        opt.zero_grad()
+        model(torch.randn(8, 8)).pow(2).mean().backward()
+        opt.step()
+        group = opt.param_groups[0]
+
+        num = torch.randn(64, 64, device=next(model.parameters()).device)
+        den = torch.rand(64, 64, device=num.device) + 0.05
+
+        ref = opt.update_(num.clone(), den.clone(), group, None)
+        buf = torch.empty_like(num)
+        out = opt.update_(num.clone(), den.clone(), group, None, out=buf)
+        print(f"    eps={eps}: identical={torch.equal(ref, out)}")
+        assert out is buf, "out= must write into the supplied buffer"
+        assert torch.equal(ref, out), "out= path diverged from the in-place path"
+
+
 # ------------------------------------------------------------ validation
 
 def test_betas_index1_none_is_rejected_up_front():
