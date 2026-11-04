@@ -18,6 +18,8 @@
 | 修 `use_orthograd` | `view(-1)` 对非连续张量（`channels_last` 卷积权重）会直接 `RuntimeError`，改 `reshape(-1)` |
 | 新增 `sync_d_stats` | 分布式下把 d 的统计量跨卡平均。FSDP/ZeRO 分片必需；DDP 下是空操作 |
 | 工程清理 | 版本号单一来源（`prodigyplus/_version.py`）、`python_requires>=3.9`、`[project]` 表、`__init__` 导入、裸 `except` |
+| `betas[1]=None` 提前报错 | 原来能构造成功，第一次 `step()` 才在 `get_bias_correction` 里抛 `TypeError`。现在构造时就给出明确 `ValueError` |
+| 删除死变量 `d_prev` | 原来写 3 次、读 0 次 |
 | 新增测试 | `tests/test_audit_fixes.py`，9 条真实张量回归 |
 
 完整审计、改动理由、以及**已经论证过但决定不做的事**见 `docs/IMPROVEMENT-PLAN.md`。
@@ -122,15 +124,11 @@ for epoch in range(epochs):
 
 3. **`use_adopt` 的 clamp 只在纯 Prodigy 模式存在**（`clamp_range = k**0.25`），SF 模式没有。
 
-4. **`d_prev` 是死变量**：只写不读，可删。
+4. **README 里 `prodigy_steps` 建议取总步数 5~25% 的说法已作废**（上游自己在新版里写了"现在不需要了"）。
 
-5. **`betas[1]=None` 通不过实际运行**：参数校验允许，但 `get_bias_correction` 会做 `beta2 ** k` 直接抛 `TypeError`。
+5. **MNIST 那组 98.5%~99.3% 的准确率是 v1.x 时代的数据**。v2.0 把内部实现整个重写过（上游明确写了"不要用新版续训老版本"），这组数字**不代表 2.x 的效果**，我也没复现。
 
-6. **README 里 `prodigy_steps` 建议取总步数 5~25% 的说法已作废**（上游自己在新版里写了"现在不需要了"）。
-
-7. **MNIST 那组 98.5%~99.3% 的准确率是 v1.x 时代的数据**。v2.0 把内部实现整个重写过（上游明确写了"不要用新版续训老版本"），这组数字**不代表 2.x 的效果**，我也没复现。
-
-8. **Muon 已被移除**，且不建议加回来：正交化输出谱范数固定，与 Prodigy 依赖二阶矩口径的 `d` 直接冲突。
+6. **Muon 已被移除**，且不建议加回来：正交化输出谱范数固定，与 Prodigy 依赖二阶矩口径的 `d` 直接冲突。
 
 ---
 

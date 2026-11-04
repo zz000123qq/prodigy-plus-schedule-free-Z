@@ -183,6 +183,32 @@ def test_runs_without_process_group():
     assert k == 4
 
 
+# ------------------------------------------------------------ validation
+
+def test_betas_index1_none_is_rejected_up_front():
+    """betas[1] used to pass validation and then explode mid-training in
+    get_bias_correction(), where beta2 ** k raises TypeError."""
+    model = _make_model()
+    try:
+        ProdigyPlusScheduleFree(model.parameters(), lr=1.0, betas=(0.9, None))
+    except ValueError as exc:
+        print(f"    ValueError at construction: {str(exc).splitlines()[0][:60]}...")
+        assert "betas[1]" in str(exc)
+    else:
+        raise AssertionError("betas[1]=None was accepted")
+
+
+def test_no_dead_d_prev_key():
+    """d_prev was written in three places and never read."""
+    model = _make_model()
+    opt = ProdigyPlusScheduleFree(model.parameters(), lr=1.0, d0=1e-2)
+    opt.zero_grad()
+    model(torch.randn(8, 8)).pow(2).mean().backward()
+    opt.step()
+    assert "d_prev" not in opt.param_groups[0]
+    print("    d_prev absent from param_group")
+
+
 # ------------------------------------------------------- schedule-free sanity
 
 def test_ckp1_matches_one_over_k():

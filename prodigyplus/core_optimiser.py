@@ -22,8 +22,16 @@ class CoreOptimiser(torch.optim.Optimizer):
             raise ValueError("Invalid epsilon value: {}".format(kwargs['eps']))
         if not 0.0 <= kwargs['betas'][0] < 1.0:
             raise ValueError("Invalid beta parameter at index 0: {}".format(kwargs['betas'][0]))
-        if kwargs['betas'][1] is not None and not 0.0 <= kwargs['betas'][1] < 1.0:
-            raise ValueError("Invalid beta parameter at index 1: {}".format(kwargs['betas'][1]))
+        beta2 = kwargs['betas'][1]
+        if beta2 is None:
+            # get_bias_correction() computes beta2 ** k, so None would surface much later
+            # as a confusing TypeError in the middle of training.
+            raise ValueError(
+                "betas[1] cannot be None: the second moment needs a decay factor. "
+                "If you meant to default the Prodigy EMA to sqrt(beta2), leave beta3=None instead."
+            )
+        if not 0.0 <= beta2 < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(beta2))
         if kwargs['beta3'] is not None and not 0.0 <= kwargs['beta3'] < 1.0:
             raise ValueError("Invalid beta3 parameter: {}".format(kwargs['beta3']))
 
@@ -57,7 +65,7 @@ class CoreOptimiser(torch.optim.Optimizer):
 
         defaults['optimiser_version'] = CoreOptimiser.VERSION
         defaults['effective_lr'] = defaults['lr']
-        defaults['d'] = defaults['d_prev'] = defaults['d0']
+        defaults['d'] = defaults['d0']
         defaults['d_denom'] = defaults['d_numerator'] = 0
         defaults['prev_d_numerator'] = defaults['max_d_numerator'] = 0
         defaults['shared_d'] = None
@@ -367,7 +375,6 @@ class CoreOptimiser(torch.optim.Optimizer):
                 d_hat = min(d * (2 ** 0.25), d_hat)
             d = max(d, d_hat * d_coef)
 
-        group['d_prev'] = group['d']
         group['d'] = d
 
     def _total_params(self):
@@ -440,7 +447,7 @@ class CoreOptimiser(torch.optim.Optimizer):
                     if group['prodigy_steps'] > 0 and group['k'] == group['prodigy_steps']:
                         self.log(f"Prodigy stepsize adaptation disabled after {group['k']} steps for param_group {i}.")
 
-                    for key in ['d', 'd_prev', 'd_numerator', 'd_denom', 'prev_d_numerator', 'max_d_numerator']:
+                    for key in ['d', 'd_numerator', 'd_denom', 'prev_d_numerator', 'max_d_numerator']:
                         group[key] = first_group[key]
 
             # Update other group values unrelated to d.
