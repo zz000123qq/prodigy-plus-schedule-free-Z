@@ -88,12 +88,12 @@
 
 | 项 | 位置 | 修法 |
 |---|---|---|
-| `VERSION=(2,0,0)` 与包版本 2.0.1 不一致 | `core_optimiser.py:5` / `setup.py:9` | 统一为单一来源；本次因 T1 改变数值行为，升到 `2.1.0` |
+| `VERSION=(2,0,0)` 与包版本 2.0.1 不一致 | `core_optimiser.py:5` / `setup.py:9` | 新增 `prodigyplus/_version.py` 作为唯一来源，`VERSION` 由它推导；本次因 T1 改变数值行为，升到 `2.1.0` |
 | 裸 `except:` | `core_optimiser.py:554, 567` | → `except Exception:` |
 | `__init__.py` 导入路径错（靠碰巧可用） | `prodigyplus/__init__.py` | → `from .core_optimiser import CoreOptimiser`，并导出 `__version__` |
 | `python_requires='>=3.4'` | `setup.py:29` | → `>=3.9` |
-| `pyproject.toml` 无 `[project]` 元数据 | `pyproject.toml` | 补最小可用的 `[project]` 表 |
-| README 中 `eps=1e8` | `README.md:82` | → `1e-8` |
+| `pyproject.toml` 无 `[project]` 元数据 | `pyproject.toml` | **未加 `[project]` 表**：本机无 setuptools，无法验证构建，贸然改会造成 install 失败。改为收紧 `requires = ["setuptools>=61"]` 并补 `packages.find` 配置，`setup.py` 仍是元数据唯一来源 |
+| README 中 `eps=1e8` | `README.md` | → `1e-8`；补 v2.1.0 变更日志 |
 
 ---
 

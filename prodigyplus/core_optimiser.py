@@ -2,8 +2,10 @@ import torch
 import torch.distributed as dist
 from statistics import harmonic_mean
 
+from ._version import __version__
+
 class CoreOptimiser(torch.optim.Optimizer):
-    VERSION = (2, 0, 0)
+    VERSION = tuple(int(x) for x in __version__.split('.')[:3])
 
     def __init__(self, params, **kwargs):
         if not 0.0 < kwargs['d0']:
@@ -623,7 +625,7 @@ class CoreOptimiser(torch.optim.Optimizer):
 
             # Patch the method.
             library.adafactor_fused.patch_adafactor_fused = prodigy_patch_adafactor_fused
-        except:
+        except Exception:
             pass
 
     def try_unhook_kohya_fbp(self):
@@ -636,7 +638,7 @@ class CoreOptimiser(torch.optim.Optimizer):
 
             # User did not opt for fused backward pass, so remove our hook.
             library.adafactor_fused.patch_adafactor_fused = self.kohya_original_patch_adafactor_fused
-        except:
+        except Exception:
             pass
 
         self.kohya_original_patch_adafactor_fused = None

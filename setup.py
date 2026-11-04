@@ -1,12 +1,22 @@
-from setuptools import setup, find_packages
+import re
+from pathlib import Path
 
-with open('README.md') as f:
-    README = f.read()
+from setuptools import find_packages, setup
+
+here = Path(__file__).parent
+README = (here / "README.md").read_text(encoding="utf-8")
+
+# Read the version without importing the package: importing it would pull in torch
+# at build time.
+version = re.search(
+    r"""__version__\s*=\s*["']([^"']+)["']""",
+    (here / "prodigyplus" / "_version.py").read_text(encoding="utf-8"),
+).group(1)
 
 setup(
   name = 'prodigy-plus-schedule-free',
-  packages = find_packages(exclude=[]),
-  version = '2.0.1',
+  packages = find_packages(exclude=['tools*']),
+  version = version,
   license='Apache-2.0',
   description = 'Automatic learning rate optimiser based on Prodigy and Schedule-Free',
   author = 'Logan Booker',
@@ -25,6 +35,8 @@ setup(
   classifiers=[
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
   ],
-  python_requires='>=3.4',
+  python_requires='>=3.9',
 )

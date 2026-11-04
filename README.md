@@ -3,6 +3,35 @@
 
 **Current status:** Experimental
 
+## Changes in v2.1.0
+Correctness and engineering fixes, based on a source audit of v2.0.1. This branch is
+not published to PyPI and does not aim for upstream parity. No changes to the
+optimiser maths except where a bug was fixed.
+
+* **Fixed `use_cautious`.** The mask was computed and normalised and then never used;
+  the update instead multiplied the raw gradient by the first moment, which changed
+  the update scale from `O(1)` to `O(|grad|)`. Only affected `use_schedulefree=False`
+  with `use_cautious=True`.
+* **Fixed the step counter under `fused_back_pass`.** Parameters that never receive a
+  gradient never fire the backward hook, so the count came up short and `group['k']`
+  advanced at the wrong rate, silently stretching Schedule-Free's averaging window.
+  The optimiser now detects a repeated parameter within a step and closes the step early.
+* **Removed three device-to-host syncs per parameter per step** in `use_speed` mode,
+  and merged the two per-step `.item()` calls into one. Also a prerequisite for
+  CUDA graph capture.
+* **Fixed `use_orthograd`.** `add_(1e-30)` could overflow the scale factor to `inf`
+  and produce NaN when the gradient is parallel to the weights. Now uses `clamp_min`,
+  `reshape` instead of `view`, and no longer mutates the caller's tensor in place.
+* **Added `sync_d_stats`** (default `True`): averages the running d statistics across
+  ranks. Required under FSDP / ZeRO-2/3, where each rank sees only a shard. No effect
+  outside a distributed run, and a no-op in effect under plain DDP.
+* Version is now read from a single source (`prodigyplus/_version.py`) and raised to
+  `2.1.0`; `python_requires` corrected to `>=3.9`; bare `except:` narrowed to
+  `except Exception:`; package imports fixed.
+
+See `docs/IMPROVEMENT-PLAN.md` for the full audit, the changes that were evaluated
+and rejected, and what is still outstanding.
+
 ## Changes in v2.0.0
 * Schedule-Free can be disabled using `use_schedulefree=False`. This reverts the optimiser to straight Prodigy, while keeping per-group learning rates and the rest of the features of the optimiser (StableAdamW, factorisation, and so on). In this mode, it is best paired with a decaying LR scheduler.
 * Changed `split_groups_mean` to `False` so full, per-group stepsize adaptation is active by default.
@@ -34,7 +63,7 @@ optimizer = ProdigyPlusScheduleFree(model.parameters(), lr=1.0, betas=(0.9, 0.99
 									split_groups=True, split_groups_mean=False,
                  					factored=True, factored_fp32=True, use_bias_correction=False,
                  					use_stableadamw=True, use_schedulefree=True, use_speed=False,
-                 					stochastic_rounding=True, fused_back_pass=False,
+                 					stochastic_rounding=True, fused_back_pass=False, sync_d_stats=True,
                  					use_cautious=False, use_grams=False, use_adopt=False,
 									use_orthograd=False, use_focus=False)
 ```
@@ -79,7 +108,7 @@ If you do use another scheduler, linear or cosine is preferred, as a restarting 
 
 Leave `lr` set to 1 unless you encounter instability. Do not use with gradient clipping, as this can hamper the ability for the optimiser to predict stepsizes. Gradient clipping/normalisation is already handled in the following configurations:
 
-1) `use_stableadamw=True,eps=1e8` (or any reasonable positive epsilon. This is the default.)
+1) `use_stableadamw=True,eps=1e-8` (or any reasonable positive epsilon. This is the default.)
 2) `eps=None` (Adam-atan2, scale invariant. Will disable StableAdamW if enabled.)
 
 The optimiser uses low-rank approximations for the second moment, much like Adafactor. There should be little to no difference in training performance, but your mileage may vary. If you encounter problems, you can try disabling factorisation by setting `factored=False`. If you're training in bfloat16, and need to squeeze out every last drop of memory, you can also set `factored_fp32=False`, which will make the factored second moment use the same precision as the weights, rather than float32 (to maximise stability).
