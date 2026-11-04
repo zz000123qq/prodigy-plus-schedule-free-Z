@@ -125,15 +125,20 @@ class CoreOptimiser(torch.optim.Optimizer):
             return grad
 
         G_shape = grad.shape
-        w = p.view(-1)
-        g = grad.view(-1)
+        # reshape rather than view: parameters are not guaranteed to be contiguous
+        # (channels_last, expanded tensors), and view() raises on those.
+        w = p.reshape(-1)
+        g = grad.reshape(-1)
         g_norm = g.norm(2)
 
-        proj = torch.dot(w, g) / torch.dot(w, w).add(1e-30)
-        g_orth = g.sub_(w, alpha=proj)
-        g_orth_scaled = g_orth.mul_(g_norm / g_orth.norm(2).add(1e-30))
+        proj = torch.dot(w, g) / torch.dot(w, w).clamp_min(1e-30)
+        g_orth = g.sub(w, alpha=proj)
+        # clamp_min rather than add: adding a tiny epsilon lets the scale factor reach
+        # g_norm * 1e30 when g is (nearly) parallel to w, which overflows to inf for
+        # large gradients and turns 0 * inf into NaN.
+        g_orth_scaled = g_orth.mul(g_norm / g_orth.norm(2).clamp_min(1e-30))
 
-        return g_orth_scaled.view(G_shape)
+        return g_orth_scaled.reshape(G_shape)
 
     # Implementation by Nerogar. From: https://github.com/pytorch/pytorch/issues/120376#issuecomment-1974828905
     def copy_stochastic_(self, target, source):
