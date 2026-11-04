@@ -329,7 +329,10 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
             if group['use_cautious']:
                 mask = grad.mul(exp_avg).sign_().clamp_min_(0)
                 mask.div_(mask.mean().clamp(min=1e-3))
-                grad.mul_(exp_avg)
+                # Apply the mask to the first moment. Previously this multiplied the raw
+                # gradient by the moment, which discarded `mask` entirely and turned the
+                # update from O(1) into O(|grad|).
+                grad.copy_(exp_avg).mul_(mask)
                 del mask
             elif group['use_grams']:
                 mask = exp_avg.abs()
