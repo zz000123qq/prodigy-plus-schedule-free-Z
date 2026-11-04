@@ -220,3 +220,24 @@ Apache-2.0，见 `LICENSE`。算法来自：
 - [facebookresearch/schedule_free](https://github.com/facebookresearch/schedule_free)
 - Adafactor 分解参考 Ross Wightman 在 `pytorch-image-models` 的实现
 - OrthoGrad / C-Optim / Grams / ADOPT / FOCUS 各自的原论文与上游 PR（见源码注释）
+
+---
+
+## 附录：与原始论文的对应（核对用）
+
+本地 `docs/papers/` 存放的是 **arXiv v4（2024-03-19）**，与 ICML 2024 版一致。核对基准就按这一版，注意比它更早的修订里算法编号不同（某些在线渲染器仍显示旧编号，`Algorithm 3` 在那里是 D-Adaptation with Resetting，v4 已删除该内容）。
+
+| 项 | 论文（Alg.3, v4） | 本库实现 | 判定 |
+|---|---|---|---|
+| `d` 更新 | 第 10 行 `d = max(d, d_hat)` | `core_optimiser.py` 的 `d = max(d, d_hat * d_coef)` | 原样。`d` 单调不减是论文的写法，不是本库的简化 |
+| `d` 增长上限 | 无 | `d_limiter=True` 时 `d_hat <= d * 2**0.25` | 本库额外加的，每步最多涨 19%，比论文更保守 |
+| `s` 衰减 | `√beta2` | `beta3 = beta2 ** 0.5` | 原样 |
+| `v` 衰减 | `beta2` | `beta2`（偏差校正可选） | 原样 |
+| `d_hat` 分母 | `‖s‖_1` | `.abs().sum()` | 原样。L1 来自附录 A.5 的坐标级分析（L-inf 距离配 L1 梯度，对偶配对），论文自己的说法是"在理论的其他部分自然出现" |
+| 内积项 | `<g, x0 - x>` | `torch.dot(sliced_grad, x0_minus)` | 原样 |
+| `gamma_k` | 默认 1，**配合 cosine annealing** | 无 `gamma`，用 Schedule-Free 的平均替代衰减 | 有意偏离：本库的目的就是不要 scheduler |
+| `d^2` 缩放 | `gamma * d^2` | `d^2 / sqrt(d0)` | 常数缩放，分子分母同乘，在比值里抵消 |
+| 逐元素采样 | 全量 | `[::11]` 切片 | 有意偏离：省统计开销，代价是估计方差变大 |
+| 二阶矩形状 | 满尺寸 | `factored=True` 时行列分解 | 有意偏离：省显存，见第四节 |
+
+论文把理论建立在**凸 + G-Lipschitz** 假设上，正文没有讨论梯度噪声、信噪比、扩散模型，也没有对非凸情形下内积项的震荡做分析；深度网络部分只做了经验验证。所以"论文预警了扩散训练的噪声问题"这类说法在原文里找不到依据。
