@@ -1,192 +1,185 @@
-# Prodigy + Schedule-Free
-*Eliminating hyperparameters, one commit at a time.*
+# Prodigy + Schedule-Free（中文说明）
 
-**Current status:** Experimental
+把 **Prodigy**（自动估计学习率）和 **Schedule-Free**（免学习率调度器）合在一起的 PyTorch 优化器。
 
-## Changes in v2.1.0
-Correctness and engineering fixes, based on a source audit of v2.0.1. This branch is
-not published to PyPI and does not aim for upstream parity. No changes to the
-optimiser maths except where a bug was fixed.
+- **上游项目**：https://github.com/LoganBooker/prodigy-plus-schedule-free（Apache-2.0，最后更新 2025-09）
+- **本仓库**：个人维护的 fork，分支 `audit-fix`，版本 `2.1.0`。**不打算向上游提 PR**，也不发布到 PyPI。
+- **状态**：实验性。下面的说明按"本分支实际代码能做什么"写，与上游 README 的措辞有出入的地方以本文为准。
 
-* **Fixed `use_cautious`.** The mask was computed and normalised and then never used;
-  the update instead multiplied the raw gradient by the first moment, which changed
-  the update scale from `O(1)` to `O(|grad|)`. Only affected `use_schedulefree=False`
-  with `use_cautious=True`.
-* **Fixed the step counter under `fused_back_pass`.** Parameters that never receive a
-  gradient never fire the backward hook, so the count came up short and `group['k']`
-  advanced at the wrong rate, silently stretching Schedule-Free's averaging window.
-  The optimiser now detects a repeated parameter within a step and closes the step early.
-* **Removed three device-to-host syncs per parameter per step** in `use_speed` mode,
-  and merged the two per-step `.item()` calls into one. Also a prerequisite for
-  CUDA graph capture.
-* **Fixed `use_orthograd`.** `add_(1e-30)` could overflow the scale factor to `inf`
-  and produce NaN when the gradient is parallel to the weights. Now uses `clamp_min`,
-  `reshape` instead of `view`, and no longer mutates the caller's tensor in place.
-* **Added `sync_d_stats`** (default `True`): averages the running d statistics across
-  ranks. Required under FSDP / ZeRO-2/3, where each rank sees only a shard. No effect
-  outside a distributed run, and a no-op in effect under plain DDP.
-* Version is now read from a single source (`prodigyplus/_version.py`) and raised to
-  `2.1.0`; `python_requires` corrected to `>=3.9`; bare `except:` narrowed to
-  `except Exception:`; package imports fixed.
+---
 
-See `docs/IMPROVEMENT-PLAN.md` for the full audit, the changes that were evaluated
-and rejected, and what is still outstanding.
+## 一、本分支（2.1.0）相对上游 2.0.1 改了什么
 
-## Changes in v2.0.0
-* Schedule-Free can be disabled using `use_schedulefree=False`. This reverts the optimiser to straight Prodigy, while keeping per-group learning rates and the rest of the features of the optimiser (StableAdamW, factorisation, and so on). In this mode, it is best paired with a decaying LR scheduler.
-* Changed `split_groups_mean` to `False` so full, per-group stepsize adaptation is active by default.
-* The Prodigy implementation adjusted to more closely match the original.
-* StableAdamW use a soft scaling formula based on the square root of the RMS. This should result in more accurate LR adjustments.
-* SPEED has been completely reworked, and should be more stable and perform better on a wide range of tasks. Personally, I now prefer it over base Prodigy.
-* Removed Muon. It never really worked correctly when combined with Schedule-Free and Prodigy.
-* Removed the "confidence" learning rate limiter, which ended up being too aggressive for non-SDXL training and fine-tuning.
-* Added a limiter to d growth to prevent over-estimated LRs when gradients and EMAs are still stabilising. It can be disabled via `d_limiter=False`.
-* Added logging group parameter `effective_lr`. This value is for reporting only; rather than using `d * lr`, you can track `d * effective_lr`. This provides a closer approximation of the LR when Schedule-Free is on. Once the LR has settled, `d * effective_lr` should be close to `(1 - beta1) * d * lr`.
-* Sufficied to say, you should not resume training started with older versions of the optimiser with this one. It will break.
+| 改动 | 说明 |
+|---|---|
+| 修 `use_cautious` | 掩码算出来后被丢弃，实际执行的是 `grad × 一阶动量`，步长量级从 `O(1)` 变成 `O(|grad|)`。只在 `use_schedulefree=False` 时触发 |
+| 修 `fused_back_pass` 计数器 | 有参数永远拿不到梯度时，步边界会落在任意位置，`k` 的推进速度与真实步数脱钩 |
+| 减少主机同步 | `use_speed=True` 时每参数每步 3 次 GPU→CPU 同步，现在整步只剩 1 次（实测 4 参数场景 14 → 1） |
+| 修 `use_orthograd` | `view(-1)` 对非连续张量（`channels_last` 卷积权重）会直接 `RuntimeError`，改 `reshape(-1)` |
+| 新增 `sync_d_stats` | 分布式下把 d 的统计量跨卡平均。FSDP/ZeRO 分片必需；DDP 下是空操作 |
+| 工程清理 | 版本号单一来源（`prodigyplus/_version.py`）、`python_requires>=3.9`、`[project]` 表、`__init__` 导入、裸 `except` |
+| 新增测试 | `tests/test_audit_fixes.py`，9 条真实张量回归 |
 
-## Installation
-For the most recent release:
-```
-pip install prodigy-plus-schedule-free
-```
-Please note v2.0.0 **includes breaking changes**. Do not use it to resume training runs on older versions! Please check the changelog above for more details. For the previous release (v1.9.2), use:
-```
-pip install prodigy-plus-schedule-free==1.9.2
+完整审计、改动理由、以及**已经论证过但决定不做的事**见 `docs/IMPROVEMENT-PLAN.md`。
+
+---
+
+## 二、安装
+
+```bash
+pip install -e .
 ```
 
-## Usage
+只依赖 `torch>=2.0`，Python 3.9+。设计上只支持 **bf16 / fp32**，其他 dtype 会打印警告且不保证正确。
+
+---
+
+## 三、最小用法
+
 ```python
-from prodigyplus.prodigy_plus_schedulefree import ProdigyPlusScheduleFree
-optimizer = ProdigyPlusScheduleFree(model.parameters(), lr=1.0, betas=(0.9, 0.99), beta3=None, 
-                 					weight_decay=0.0, weight_decay_by_lr=True, d0=1e-6, d_coef=1.0,
-							        d_limiter=True, prodigy_steps=0, schedulefree_c=0, eps=1e-8,
-									split_groups=True, split_groups_mean=False,
-                 					factored=True, factored_fp32=True, use_bias_correction=False,
-                 					use_stableadamw=True, use_schedulefree=True, use_speed=False,
-                 					stochastic_rounding=True, fused_back_pass=False, sync_d_stats=True,
-                 					use_cautious=False, use_grams=False, use_adopt=False,
-									use_orthograd=False, use_focus=False)
+from prodigyplus import ProdigyPlusScheduleFree
+
+opt = ProdigyPlusScheduleFree(model.parameters(), lr=1.0)
+
+for epoch in range(epochs):
+    model.train()
+    opt.train()                       # 必须：训练前切到 train
+    for x, y in loader:
+        opt.zero_grad()
+        loss = criterion(model(x), y)
+        loss.backward()
+        opt.step()
+
+    model.eval()
+    opt.eval()                        # 必须：评估前切到 eval，否则指标不对
+    # ... 评估 ...
 ```
 
-> [!IMPORTANT]
-> As with the reference implementation of Schedule-Free, a constant scheduler should be used, along with the appropriate calls to `optimizer.train()` and `optimizer.eval()`. See the Schedule-Free documentation for more details: https://github.com/facebookresearch/schedule_free
+**三条铁律**：
 
-> [!TIP]
-> [Recent research suggests](https://arxiv.org/pdf/2507.09846) `betas=(0.95, 0.99)` works better in most situations for Schedule-Free. For now, the default remains `betas=(0.9, 0.99)`.
+1. **`lr` 保持 1.0**。它只是外部缩放系数，真正的学习率由 Prodigy 算出的 `d` 决定。
+2. **`train()` / `eval()` 必须配对调用**，且要在 `model.train()` / `model.eval()` 旁边。漏掉 `eval()` 会让评估结果失真（看到的是 y 点而不是平均点 x）。
+3. **不要用外部梯度裁剪**。内部已经做了更新量缩放，外面再裁会打乱 Prodigy 对步长的估计。想让内部缩放更温和就调 `use_stableadamw` 或 `eps`。
 
-## TLDR
-The default settings should "just work", but there are a few configurations you can try to improve things.
+---
 
-### Gradient scaling/clipping
-By default, the optimiser uses StableAdamW to scale parameter updates, which reduces the need for external gradient scaling or clipping. However, this can also hamper Prodigy's ability to adapt the stepsize. While the optimiser includes internal logic to mostly mitigate this, you can try `eps=None` to use Adam-atan2 instead, or set `use_stableadamw=False` and use external gradient clipping.
+## 四、参数速查
 
-### Training multiple networks
-Unlike reference Prodigy, this optimiser will adjust the stepsize per parameter group, allowing one to train multiple networks at the same time. To train all groups together like the original Prodigy, set `split_groups=False`.
+### 4.1 常用（一般只调这几个）
 
-> [!TIP]
-> As of v2.0.0, `split_groups_mean` is `False` by default, so full, per-group training is always active. Set `split_groups_mean=True` to replicate the behaviour of older versions.
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `lr` | `1.0` | 外部缩放系数，**保持 1** |
+| `betas` | `(0.9, 0.99)` | 动量系数。Schedule-Free 下社区建议 `(0.95, 0.99)`，作者仍保留 0.9 作默认 |
+| `weight_decay` | `0.0` | 解耦权重衰减 |
+| `weight_decay_by_lr` | `True` | WD 是否乘自适应学习率（PyTorch AdamW 的行为）。不懂就别动 |
+| `d0` | `1e-6` | Prodigy 的初始学习率猜测。LR 涨不上去就试 `1e-5`/`1e-4`；一直偏大就试 `1e-7` |
+| `d_coef` | `1.0` | 调 LR 的首选旋钮，`0.5` 和 `2.0` 都常用 |
+| `d_limiter` | `True` | 限制 `d` 每步涨幅（不超过 2^0.25 倍），避免早期高估 |
+| `prodigy_steps` | `0` | 大于 0 时在第 N 步**冻结** `d` 并释放 Prodigy 专用显存。长跑或扩散模型训练常用；短跑不需要 |
+| `schedulefree_c` | `0` | Refined SF-Adam 的平均强度。`0` = 关闭（用原始 Schedule-Free 规则）。小 batch 短跑试 6~12，长跑试 50~200 |
+| `eps` | `1e-8` | 分母稳定项。设成 `None` 则改用 **Adam-atan2**（尺度不变、免调 eps），会顺带关掉 `use_stableadamw` |
+| `use_schedulefree` | `True` | 设 `False` 退回纯 Prodigy，此时**需要自己配学习率调度器**（推荐 cosine） |
 
-### Turning off Prodigy
-Earlier versions of the optimiser recommended setting `prodigy_steps` equal to 5-25% of your total step count, but this should not be necessary with recent updates. That said, you can still use the setting to make sure the LR does not change after a certain step, and free any memory used by Prodigy for adapting the step size.
+### 4.2 按场景才需要动
 
-## Details
-An optimiser based on Prodigy that includes Schedule-Free logic and much, much lower memory usage, the aim being to remove the need to set any hyperparameters. Of course, that's never the case with any optimiser, but hopefully, this comes close!
+| 参数 | 默认 | 什么时候用 |
+|---|---|---|
+| `split_groups` | `True` | 每个 param_group 单独算 `d`。同时训多个网络（如 text encoder + UNet）时有用。只有一个 param_group 时自动禁用 |
+| `split_groups_mean` | `False` | 各组 `d` 取调和平均后再乘各组自己的 lr。想复刻老版本行为时开 |
+| `factored` | `True` | Adafactor 式二阶矩分解，省显存。出现 NaN 或 LR 涨不动时关掉 |
+| `factored_fp32` | `True` | 分解后的二阶矩强制 fp32。只在显存极度紧张且短训时设 `False` |
+| `stochastic_rounding` | `True` | bf16 权重写回时用随机舍入，效果更接近 fp32。**只对 bf16 参数生效** |
+| `use_stableadamw` | `True` | 按更新量的 RMS 做软缩放（只压不放）。LR 一直高估时关掉，改用外部裁剪 |
+| `use_bias_correction` | `False` | RAdam 式偏差修正 + 自动 warmup。**会显著拖慢 `d` 的收敛**（可能慢 10 倍），可用 `use_speed` 部分抵消 |
+| `fused_back_pass` | `False` | 用 fused backward pass 时必须置 `True`，让优化器跳过常规 `step()`。需要训练脚本/UI 侧支持 |
+| `sync_d_stats` | `True` | 分布式下跨卡平均 d 统计。FSDP/ZeRO-2/3 必需；纯 DDP 下多余但无害 |
 
-Hyperparameters eliminated: Learning rate (Prodigy), LR scheduler (Schedule-Free), epsilon (Adam-atan2, optional, not enabled by default).
+### 4.3 实验性功能 —— 在本库中收益有限，多数默认关闭
 
-Based on code from:
-* https://github.com/facebookresearch/schedule_free
-* https://github.com/konstmish/prodigy
+这几个都来自 2024~2025 年的论文小技巧，作者自己在 docstring 里写了 "may have a limited effect"。**建议先不用**。
 
-Incorporates improvements from these pull requests (credit to https://github.com/dxqbYD, https://github.com/sangoi-exe and https://github.com/nhamanasu):
-* https://github.com/konstmish/prodigy/pull/23
-* https://github.com/konstmish/prodigy/pull/22
-* https://github.com/konstmish/prodigy/pull/20
-* https://github.com/facebookresearch/schedule_free/pull/54
+| 参数 | 在本库的真实状态 |
+|---|---|
+| `use_speed` | 作者自创（Simplified Prodigy with rElativE D），用动量式方向进展替代 num/denom。省显存、尺度不敏感，但**与 weight_decay 同用容易失稳**，超长训练也容易飘 |
+| `use_orthograd` | 用正交于权重方向的梯度分量更新。两种模式都可用。注意：与权重平行的分量会被完全丢弃 |
+| `use_focus` | FOCUS 更新规则。**强制关闭 `factored`（显存上升）并禁用 Adam-atan2** |
+| `use_cautious` | C-Optim。⚠️ **Schedule-Free 模式下是半实现**：掩码只作用于 y，z 仍然吃未过滤的更新（见第五节） |
+| `use_grams` | Grams，问题同 `use_cautious`（与它互斥，同开会自动关掉 grams） |
+| `use_adopt` | ADOPT 的**残缺实现**。Schedule-Free 模式没有一阶动量，只剩"分母延后一步 + 首步跳过参数更新" |
 
-If you do use another scheduler, linear or cosine is preferred, as a restarting scheduler can confuse Prodigy's adaptation logic.
+---
 
-Leave `lr` set to 1 unless you encounter instability. Do not use with gradient clipping, as this can hamper the ability for the optimiser to predict stepsizes. Gradient clipping/normalisation is already handled in the following configurations:
+## 五、这些功能其实"用不上"——按代码实际行为说明
 
-1) `use_stableadamw=True,eps=1e-8` (or any reasonable positive epsilon. This is the default.)
-2) `eps=None` (Adam-atan2, scale invariant. Will disable StableAdamW if enabled.)
+写这份文档时逐项核对过源码，以下几点与上游 README 给人的印象不同：
 
-The optimiser uses low-rank approximations for the second moment, much like Adafactor. There should be little to no difference in training performance, but your mileage may vary. If you encounter problems, you can try disabling factorisation by setting `factored=False`. If you're training in bfloat16, and need to squeeze out every last drop of memory, you can also set `factored_fp32=False`, which will make the factored second moment use the same precision as the weights, rather than float32 (to maximise stability).
+1. **默认配置下根本没有一阶动量。**
+   `use_schedulefree=True` 时 `initialise_state` 只建 `z`，不建 `exp_avg`。所以 `use_cautious` / `use_grams` / `use_adopt` 这些**依赖动量的技巧全部退化**——作者在 docstring 里也承认 "we do not have access to a first moment"。要用这些技巧，实际得设 `use_schedulefree=False`。
 
-The optimiser also supports [fused backward pass](https://pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html) to significantly lower gradient memory usage. The `fused_back_pass` argument must be set to `True` so the optimiser knows not to perform the regular step. Please note however that your training scripts / UI of choice *must* support the feature for generic optimisers -- as of May 2025, Kohya hard-codes which optimisers have fused backward pass support, and so this optimiser's fused pass will not work out of the box with it.
+2. **Schedule-Free 模式下 `cautious` / `grams` 只过滤了一半。**
+   `update_params` 里先 `z.sub_(update)`，之后才给 `u` 上掩码。结果是 **z 吃未过滤更新、y 吃过滤后更新**，与 C-Optim 的本意不一致。纯 Prodigy 模式反而是完整的。
 
-In some scenarios, it can be advantageous to freeze Prodigy's adaptive stepsize after a certain number of steps. This can be controlled via the `prodigy_steps` settings. [It's been suggested that all Prodigy needs to do is achieve "escape velocity"](https://arxiv.org/pdf/2409.20325) in terms of finding a good LR, which it usually achieves after ~25% of training, though this is very dependent on batch size and epochs.
+3. **`use_adopt` 的 clamp 只在纯 Prodigy 模式存在**（`clamp_range = k**0.25`），SF 模式没有。
 
-This setting can be particularly helpful when training diffusion models, which have very different gradient behaviour than what most optimisers are tuned for. Prodigy in particular will increase the LR forever if it is not stopped or capped in some way (usually via a decaying LR scheduler). Even if you don't need to cap LR growth, the optimiser will free all Prodigy-specific state memory once `prodigy_steps` is exceeded, which may improve performance where memory usage is on the borderline.
+4. **`d_prev` 是死变量**：只写不读，可删。
 
-## Experimental features
-**Adam-atan2:** `eps=None`. Outlined in [Scaling Exponents Across Parameterizations and Optimizers](https://arxiv.org/abs/2407.05872), you can use atan2 in place of the regular division plus epsilon found in most Adam-style optimisers. This makes updates scale-invariant, and removes the need to tweak the epsilon. Disabled by default.
+5. **`betas[1]=None` 通不过实际运行**：参数校验允许，但 `get_bias_correction` 会做 `beta2 ** k` 直接抛 `TypeError`。
 
-**C-Optim:** `use_cautious=True`. Outlined in [Cautious Optimizers: Improving Training with One Line of Code](https://arxiv.org/pdf/2411.16085). Applies a simple modification to parameter updates that promotes values that are aligned with the current gradient. This should result in faster convergence. While not 1:1 compatible with Schedule-Free, [the implementation by nhamanasu](https://github.com/facebookresearch/schedule_free/pull/54) does work, though improvements may be limited.
+6. **README 里 `prodigy_steps` 建议取总步数 5~25% 的说法已作废**（上游自己在新版里写了"现在不需要了"）。
 
-**Grams:** `use_grams=True`. Described in [Grams: Gradient Descent with Adaptive Momentum Scaling](https://arxiv.org/abs/2412.17107). In a similar vein to C-Optim, the parameter update is modified to separate the update direction from momentum. Thanks to [gesen2egee for the pull request](https://github.com/LoganBooker/prodigy-plus-schedule-free/pull/5).
+7. **MNIST 那组 98.5%~99.3% 的准确率是 v1.x 时代的数据**。v2.0 把内部实现整个重写过（上游明确写了"不要用新版续训老版本"），这组数字**不代表 2.x 的效果**，我也没复现。
 
-**ADOPT:** `use_adopt=True`. A partial implementation of [ADOPT: Modified Adam Can Converge with Any β2 with the Optimal Rate](https://arxiv.org/abs/2411.02853), as we only update the second moment after the parameter update, so as to exclude the current gradient. Disabled by default.
+8. **Muon 已被移除**，且不建议加回来：正交化输出谱范数固定，与 Prodigy 依赖二阶矩口径的 `d` 直接冲突。
 
-**OrthoGrad:** `use_orthograd=True`. Updates weights using the component of the gradient that is orthogonal to the current weight direction, as described in [Grokking at the Edge of Numerical Stability](https://arxiv.org/pdf/2501.04697). Can help prevent overfitting and improve generalisation.
+---
 
-**FOCUS:** `use_focus=True`. Modifies the update step to better handle noise at large step sizes. From [FOCUS: First-Order Concentrated Update Scheme](https://arxiv.org/abs/2501.12243). This method is incompatible with factorisation (which will increase state memory usage), Muon and Adam-atan2. Additionally, Prodigy modifies the second moment updates when `d` changes, which may limit the benefits of this method.
+## 六、与 ScheduleFree+（2026）的差距
 
-**SPEED:** `use_speed=True`. Something of my own creation I've dubbed _Simplified Prodigy with rElativE D_. It replaces Prodigy's numerator/denominator ratio with a momentum-based estimate of directional progress. SPEED uses less memory, is scale-insensitive, and can be a better choice when training multiple networks, however, it can be unstable when used with weight decay or for extremely long training runs (where it's recommended to use `prodigy_steps`).
+上游停在 2025 年中的 *Refined SF-Adam*（arXiv 2507.09846）。2026-08 Defazio 本人的 **ScheduleFree+**（arXiv 2605.19095）给出 6 项让它扩展到 LLM 的修正，本库**一项都没有**：
 
-> [!NOTE]
-> If `use_schedulefree=False`, all experimental features are implemented as per their reference implementations.
+| # | 修正 | 本库现状 |
+|---|---|---|
+| 1 | 恢复内层动量（β₁≈0.75~0.9） | SF 路径无 `exp_avg`，大 batch 会有 scaling cliff |
+| 2 | Polyak 步长 + 平滑 L1 梯度范数 | 走的是 Prodigy 的 num/denom 比率 |
+| 3 | c-warmup（延迟启用平均） | 从第 1 步就平均 |
+| 4 | 外层 β 退火（0.8/0.9 → 0.965） | **结构上做不到**：`beta1` 同时是内层动量系数和 SF 平均系数 |
+| 5 | r=1 幂加权平均（`w = t^r·γ^p`） | 只有 `w = dlr²` |
+| 6 | 全解耦 AdamC 权重衰减（γ²λ） | 是 γλ |
 
-## Prodigy FAQ
-**Q: Why doesn't Prodigy ever lower the learning rate?**
+论文口径的收益：长跑 1000 tokens/参数下比最强 Linear Decay 基线省 31% 训练时间。**这六项没做，是下一步的主要工作**，改造顺序和依赖关系见计划书第六节。
 
-The original Prodigy's aim is not to act as a combined learning rate calculator and scheduler. It's meant to ballpark a good learning rate, and leave LR decay to your preferred scheduler (usually cosine). Prodigy + Schedule-Free does combine the two, but it doesn't adjust the LR directly -- in simple terms, it uses a smaller and smaller portion of the averaged updates as training goes on, roughly approximating a 1/t schedule. 
+---
 
-Looking at `d` alone tells only parts of the story; this is just the LR Prodigy has calculated, minus any internal modifications. A better metric is observing the norm of the weights, you'll see their rate of growth decrease significantly over time, reflecting the small tail of a traditional LR schedule. You can also log `group['effective_lr'] * group['d']`, which gives a much more accurate representation of Schedule-Free's LR.
+## 七、适用 / 不适用
 
-**Q: Why isn't Prodigy increasing the LR?**
+**适合**：扩散模型微调、LoRA、小到中等规模任务的"不想调 LR 和 scheduler"场景。这类任务里"随时停训、随时存盘"是硬需求，Schedule-Free 的价值最大。
 
-If Prodigy fails to increase the LR over an extended period (say 100 or more steps), and you're not using bias correction, non-constant LR scheduler or warmup, this usually indicates one of the following:
-1. You haven't set the optimiser's `lr` argument to 1. For compatibility with external LR schedulers, the optimiser will multiple the LR you provide with the adaptive one, so if you forget to change this when switching optimisers, the LR will be tiny.
-2. The ideal LR is less than `d0` (Prodigy's initial LR guess). Try setting `d0` to a lower value, such as 1e-7 or 1e-8. If this doesn't help, you can also try setting `d_coef=2` (or higher), or `use_speed=True`.
-3. The value for `d0` is too conservative and starving Prodigy. Try raising `d0` to 1e-5 or 1e-4.
-4. External gradient clipping is enabled. This optimiser handles gradient scaling already, so turn off any external clipping/scaling. Alternatively, you can use external scaling, and disable the internal one via `use_stableadamw=False`.
-5. Set `d_limiter=False`. The growth limiter should never prevent the LR from increasing, but it's possible your training scenario requires faster adjustments.
+**不适合**：
 
-## MNIST results
-Generated from the [MNIST example in the Schedule-Free repository](https://github.com/facebookresearch/schedule_free/tree/main/examples/mnist), using the default settings.
+- **LLM 预训练**。2026 年这个领域的主流是 Muon / SOAP（NVIDIA 在数万亿 token 上实测优于 AdamW），本项目主动放弃了这条线。
+- 需要精确复现某个已知 LR 曲线的工作。
+- 追求单步速度极限的场景：本优化器是逐参数 Python 循环，没有 `foreach`／`fused` kernel 实现。
+
+---
+
+## 八、测试
+
+```bash
+python tests/test_audit_fixes.py
 ```
-Prodigy LR: 0.000862
-Test set: Average loss: 0.0456, Accuracy: 9849/10000 (98.49%)
-Test set: Average loss: 0.0347, Accuracy: 9881/10000 (98.81%)
-Test set: Average loss: 0.0324, Accuracy: 9898/10000 (98.98%)
-Test set: Average loss: 0.0308, Accuracy: 9911/10000 (99.11%)
-Test set: Average loss: 0.0299, Accuracy: 9913/10000 (99.13%)
-Test set: Average loss: 0.0285, Accuracy: 9919/10000 (99.19%)
-Test set: Average loss: 0.0289, Accuracy: 9922/10000 (99.22%)
-Test set: Average loss: 0.0300, Accuracy: 9925/10000 (99.25%)
-Test set: Average loss: 0.0306, Accuracy: 9924/10000 (99.24%)
-Test set: Average loss: 0.0319, Accuracy: 9927/10000 (99.27%)
-Test set: Average loss: 0.0339, Accuracy: 9925/10000 (99.25%)
-Test set: Average loss: 0.0349, Accuracy: 9928/10000 (99.28%)
-Test set: Average loss: 0.0366, Accuracy: 9924/10000 (99.24%)
-Test set: Average loss: 0.0377, Accuracy: 9926/10000 (99.26%)
-```
-With `use_speed=True`:
-```
-Prodigy LR: 0.002582
-Test set: Average loss: 0.0401, Accuracy: 9861/10000 (98.61%)
-Test set: Average loss: 0.0309, Accuracy: 9908/10000 (99.08%)
-Test set: Average loss: 0.0276, Accuracy: 9916/10000 (99.16%)
-Test set: Average loss: 0.0259, Accuracy: 9928/10000 (99.28%)
-Test set: Average loss: 0.0258, Accuracy: 9930/10000 (99.30%)
-Test set: Average loss: 0.0268, Accuracy: 9931/10000 (99.31%)
-Test set: Average loss: 0.0288, Accuracy: 9926/10000 (99.26%)
-Test set: Average loss: 0.0305, Accuracy: 9927/10000 (99.27%)
-Test set: Average loss: 0.0309, Accuracy: 9934/10000 (99.34%)
-Test set: Average loss: 0.0309, Accuracy: 9932/10000 (99.32%)
-Test set: Average loss: 0.0323, Accuracy: 9933/10000 (99.33%)
-Test set: Average loss: 0.0337, Accuracy: 9934/10000 (99.34%)
-Test set: Average loss: 0.0345, Accuracy: 9932/10000 (99.32%)
-Test set: Average loss: 0.0352, Accuracy: 9933/10000 (99.33%)
-```
+
+不需要 pytest。9 条用例覆盖：cautious 掩码、SPEED 同步次数、FBP 计数器、orthograd 非连续张量、ckp1 = 1/k、train/eval 往返、单卡无进程组、CUDA bf16 整步。
+
+每条都对照上游 v2.0.1 验证过判别力（例如 cautious 的步长在旧版是对照组的 1/20）。**多卡 `sync_d_stats` 没有验证过**——本机无多卡环境。
+
+---
+
+## 九、致谢与许可
+
+Apache-2.0，见 `LICENSE`。核心算法来自：
+
+- https://github.com/konstmish/prodigy
+- https://github.com/facebookresearch/schedule_free
+- Adafactor 分解参考 Ross Wightman 在 `pytorch-image-models` 的实现
+- OrthoGrad / C-Optim / Grams / ADOPT / FOCUS 各自的原论文与上游 PR（见源码注释）
