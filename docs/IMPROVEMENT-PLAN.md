@@ -68,12 +68,13 @@
 - **修法**：引入"本 step 已见参数集合"。`on_start_step(p)` 发现 `id(p)` 已在集合里 → 说明上一步没正常收尾 → 强制收尾并重新上膛。无梯度参数本来就不贡献统计，因此提前收尾是安全的。
 - **验收**：`audit/sim_step_counter.py` —— 任意冻结比例下 `k` 都稳定每轮 +1。
 
-### T4 `orthograd_` 的数值边界与非连续张量 【P2，必修】
+### T4 `orthograd_` 的非连续张量崩溃 【P2，已修；NaN 一说已证伪】
 
-- **位置**：`prodigyplus/core_optimiser.py:123-136`
-- **问题**：① `g_orth.norm(2).add_(1e-30)` 在 `g ∥ w` 时会让缩放因子达到 `g_norm·1e30`，fp32 下可溢出成 `inf` → `0*inf = nan`；② `p.view(-1)` 对非连续参数（channels_last / `expand`）直接抛错。
-- **修法**：`add_(1e-30)` → `clamp_min_(1e-30)`；`view(-1)` → `reshape(-1)`。
-- **验收**：构造 `g = k·w` 的退化输入，断言输出无 NaN；对 channels_last 张量断言不抛错。
+- **位置**：`prodigyplus/core_optimiser.py` 的 `orthograd_`
+- **真问题（已复现）**：`p.view(-1)` 对非连续参数抛 `RuntimeError: view size is not compatible...`。`channels_last` 的卷积权重、`expand` 出来的张量都会踩到。实测 v2.0.1 直接崩，改 `reshape(-1)` 后正常。
+- **附带清理**：`sub_` / `mul_` 原地改写会污染调用方传入的 `update` 张量（当前调用点恰好安全），改为非原地。
+- **已证伪**：原以为 `g_orth.norm(2).add_(1e-30)` 在 `g ∥ w` 时会溢出成 `inf` 导致 `0*inf = nan`。实测 scale 从 1e4 到 1e9，输出全部有限——浮点减法留下 ~1e-16 的相对残差，缩放因子上限约 1e16，碰不到 `inf`。且 `add_(1e-30)` 与 `clamp_min(1e-30)` 在 `norm=0` 时**完全等价**，这条改动不改变任何行为，仅统一写法。
+- **验收**：`tests/test_audit_fixes.py::test_orthograd_accepts_non_contiguous_params`（旧版 RuntimeError，新版通过）。
 
 ### T5 分布式：FSDP/ZeRO 分片下的 `d` 统计规约 【P1，实现但不验证】
 
