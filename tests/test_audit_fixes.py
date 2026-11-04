@@ -214,6 +214,62 @@ def test_update_out_matches_inplace_path():
         assert torch.equal(ref, out), "out= path diverged from the in-place path"
 
 
+# ------------------------------------------------- schedulefree+ extras
+
+def test_c_warmup_makes_y_track_z():
+    """During c-warmup the averaged point must equal the iterate exactly."""
+    warmup = 5
+    torch.manual_seed(0)
+    model = _make_model()
+    opt = ProdigyPlusScheduleFree(model.parameters(), lr=1.0, d0=1e-2, c_warmup=warmup)
+    param = next(model.parameters())
+
+    observed = []
+    for k in range(1, 10):
+        opt.zero_grad()
+        model(torch.randn(8, 8)).pow(2).mean().backward()
+        opt.step()
+        observed.append(torch.equal(param.detach(), opt.state[param]["z"]))
+
+    print(f"    y == z per step (1..9): {observed}  (warmup={warmup})")
+    assert all(observed[:warmup]), "y must equal z inside the warmup window"
+    assert not all(observed[warmup:]), "averaging must resume after the warmup window"
+
+
+def test_schedulefree_r_weights_recent_steps_more():
+    """w_t = t^r * dlr^2; at a given k, ckp1 should scale by about (1+r)."""
+    def ckp1_at(k_target, r):
+        torch.manual_seed(0)
+        model = _make_model()
+        opt = ProdigyPlusScheduleFree(
+            model.parameters(), lr=1.0, d0=1e-2, prodigy_steps=1, schedulefree_r=r,
+        )
+        seen = []
+        orig = ProdigyPlusScheduleFree.update_params
+
+        def spy(self, y, z, update, group, dlr):
+            w = dlr ** 2
+            if r > 0:
+                w *= group["k"] ** r
+            seen.append((group["k"], w / (group.get("weight_sum", 0) + w)))
+            return orig(self, y, z, update, group, dlr)
+
+        ProdigyPlusScheduleFree.update_params = spy
+        try:
+            for _ in range(12):
+                opt.zero_grad()
+                model(torch.randn(8, 8)).pow(2).mean().backward()
+                opt.step()
+        finally:
+            ProdigyPlusScheduleFree.update_params = orig
+        return [c for k, c in seen if k == k_target][0]
+
+    base = ckp1_at(10, 0)
+    boosted = ckp1_at(10, 1.0)
+    print(f"    ckp1 at k=10: r=0 {base:.4f} -> r=1 {boosted:.4f} (ratio {boosted/base:.2f}, expect ~2)")
+    assert 1.6 < boosted / base < 2.4, "r=1 should roughly double the weight given to recent steps"
+
+
 # ------------------------------------------------------------ validation
 
 def test_betas_index1_none_is_rejected_up_front():

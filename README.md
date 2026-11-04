@@ -67,6 +67,8 @@ for epoch in range(epochs):
 | `d_limiter` | `True` | 限制 `d` 每步涨幅（不超过 2^0.25 倍） |
 | `prodigy_steps` | `0` | 大于 0 时在第 N 步**冻结** `d` 并释放 Prodigy 专用显存。长跑 / 扩散模型常用 |
 | `schedulefree_c` | `0` | Refined SF-Adam 的平均强度。`0` = 关闭（走原始 SF 规则）。小 batch 短跑试 6~12，长跑试 50~200 |
+| `c_warmup` | `0` | ScheduleFree+ 的延迟平均：前 N 步不平均（`y` 直接跟随 `z`）。论文建议取约 2×LR warmup 长度。只多一个计数器，零显存 |
+| `schedulefree_r` | `0.0` | 平均权重改成 `w = k^r · dlr²`。**论文只在 >30B token 的长跑用 r=1，短跑用 r=1 反而略差**，所以默认 0 |
 | `eps` | `1e-8` | 设成 `None` 改用 **Adam-atan2**（尺度不变、免调 eps），会顺带关掉 `use_stableadamw` |
 | `use_schedulefree` | `True` | 设 `False` 退回纯 Prodigy，此时**必须自己配调度器**（cosine 推荐） |
 
@@ -168,12 +170,16 @@ for epoch in range(epochs):
 |---|---|---|
 | 1 | 恢复内层动量（β₁≈0.75~0.9） | SF 路径无 `exp_avg`，大 batch 会出现 scaling cliff |
 | 2 | Polyak 步长 + 平滑 L1 梯度范数 | 走的是 Prodigy 的 num/denom 比率 |
-| 3 | c-warmup（延迟启用平均） | 从第 1 步就平均 |
+| 3 | c-warmup（延迟启用平均） | ✅ **已提供** `c_warmup=N`，默认 0（关闭，行为不变） |
 | 4 | 外层 β 退火（0.8/0.9 → 0.965） | **结构上做不到**：`beta1` 同时是内层动量系数和 SF 平均系数 |
-| 5 | r=1 幂加权平均（`w = t^r·γ^p`） | 只有 `w = dlr²` |
+| 5 | 幂加权平均（`w = t^r·γ^p`） | ✅ **已提供** `schedulefree_r=r`，默认 0。注意论文说 r=1 只适合长跑，短跑反而略差 |
 | 6 | 全解耦 AdamC 权重衰减（γ²λ） | 是 γλ |
 
-论文口径：长跑 1000 tokens/参数下比最强 Linear Decay 基线省 31% 训练时间。**这六项是下一步的主要工作**，改造顺序和依赖见 `docs/IMPROVEMENT-PLAN.md` 第六节。
+其中 #3 和 #5 是纯加法、不改默认行为，已做成可选开关（实测：`c_warmup=5` 时前 5 步 `y` 与 `z` 完全相等，第 6 步恢复平均；`schedulefree_r=1` 时 `ckp1` 在 k=10 从 0.100 升到 0.182）。
+
+剩下 4 项未做，其中 #1 和 #4 是结构性问题（`beta1` 一个旋钮两用），#1 还要多占 85% 的状态显存（`exp_avg` 与 `z` 同尺寸）。
+
+论文口径的收益（省 31% 训练时间）来自 **LLM 长跑**场景，是否适用于 1000~3000 步的 LoRA 微调没有证据，别直接套。
 
 ---
 
@@ -192,10 +198,10 @@ for epoch in range(epochs):
 ## 八、开发
 
 ```bash
-python tests/test_audit_fixes.py      # 12 条用例，不需要 pytest
+python tests/test_audit_fixes.py      # 14 条用例，不需要 pytest
 ```
 
-覆盖：cautious 掩码、SPEED 同步次数、FBP 计数器、orthograd 非连续张量、`out=` 与原地路径等价、ckp1 = 1/k、train/eval 往返、单卡无进程组、CUDA bf16 整步、参数校验。
+覆盖：cautious 掩码、SPEED 同步次数、FBP 计数器、orthograd 非连续张量、`out=` 与原地路径等价、ckp1 = 1/k、`c_warmup` 期间 `y==z`、`schedulefree_r` 的权重变化、train/eval 往返、单卡无进程组、CUDA bf16 整步、参数校验。
 
 `tools/logic_checks/` 下是两份不依赖 torch 的逻辑复现脚本（步计数器、`weight_sum`），用来在没装 torch 的环境里验证行为契约。
 

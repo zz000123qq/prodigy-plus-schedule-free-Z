@@ -79,6 +79,18 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
             Set to 0 to disable and use the original Schedule-Free rule (no extra scaling). Short, noisy runs with small batches typically 
             benefit from modest values (≈6-12); long/large-batch runs can use larger values (≈50-200).
             (default: 0.0)
+        c_warmup (int):
+            Skip iterate averaging for the first N steps, i.e. use c_t = 1 so that y tracks z
+            exactly. From ScheduleFree+ (https://arxiv.org/pdf/2605.19095), where the suggested
+            value is roughly twice your LR warmup length. Helpful when the weight norm moves a
+            lot early in training, because the averaged point then has a smaller norm than z and
+            the effective stepsize runs hot. Costs nothing but a counter. 0 disables it.
+            (default: 0)
+        schedulefree_r (float):
+            Exponent r in the averaging weight w_t = t^r * dlr^2, from ScheduleFree+ as well.
+            Larger values put more weight on recent steps. The paper uses r=1 only for long runs
+            (over ~30B tokens) and keeps r=0 for short ones, where r=1 is slightly worse.
+            (default: 0.0)
         eps (float):
             Term added to the denominator outside of the root operation to improve numerical stability. If set to None,
             Adam-atan2 is used instead. This removes the need for epsilon tuning, but may not work well in all situations.
@@ -176,6 +188,8 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
                  d_limiter=True,
                  prodigy_steps=0,
                  schedulefree_c=0,
+                 c_warmup=0,
+                 schedulefree_r=0.0,
                  eps=1e-8,
                  split_groups=True,
                  split_groups_mean=False,
@@ -202,6 +216,8 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
                         d_limiter=d_limiter,
                         prodigy_steps=prodigy_steps,
                         schedulefree_c=schedulefree_c,
+                        c_warmup=c_warmup,
+                        schedulefree_r=schedulefree_r,
                         eps=eps,
                         split_groups=split_groups,
                         split_groups_mean=split_groups_mean,
@@ -254,7 +270,16 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
         beta1, _, _ = self.get_betas(group)
         decay = self.get_weight_decay(group)
 
+        k = group['k']
+
         weight = dlr ** 2
+        # ScheduleFree+ (arXiv 2605.19095) weights step k by k**r. The paper reports
+        # r=1 helps only on long runs (>30B tokens) and is slightly worse for short
+        # ones, so the default stays at r=0 (equal weight).
+        schedulefree_r = group.get('schedulefree_r', 0)
+        if schedulefree_r > 0:
+            weight *= k ** schedulefree_r
+
         weight_sum = group['running_weight_sum'] = group.get('weight_sum', 0) + weight
         ckp1 = weight / weight_sum if weight_sum else 0
 
@@ -264,6 +289,15 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
         schedulefree_c = group.get('schedulefree_c', 0)
         if schedulefree_c > 0:
             ckp1 = min(1.0, ckp1 * (1 - beta1) * schedulefree_c)
+
+        # c-warmup: skip averaging for the first `c_warmup` steps, so y tracks z
+        # exactly. The paper's reason is not "early weights pollute the average"
+        # (1/k weighting dilutes those anyway) but that the averaged point has a
+        # smaller norm than z while the norm is still moving, which inflates the
+        # effective learning rate early on.
+        c_warmup = group.get('c_warmup', 0)
+        if c_warmup > 0 and k <= c_warmup:
+            ckp1 = 1.0
 
         xy_step = 1 - beta1 * (1 - ckp1)
         group['effective_lr'] = group['lr'] * xy_step
