@@ -210,6 +210,21 @@ for epoch in range(epochs):
 
 复现：`python tools/experiments/a2_param_groups.py --steps 600 --seeds 3`。
 
+**`c_warmup` 的收益随 batch 变小而消失。** 同一任务，batch 2（家用显卡的常见区间）重扫：
+
+| 配置（batch 2） | eval loss | ±std | 相对默认 |
+|---|---|---|---|
+| 默认 | 0.08786 | 0.00056 | - |
+| `c_warmup=100` | 0.08599 | 0.00201 | -2.1% |
+| `+ schedulefree_c=10` | 0.08555 | 0.00229 | -2.6% |
+| `+ beta1=0.95` | 0.08931 | 0.00240 | +1.6% |
+| `+ use_cautious` | 0.08407 | 0.00268 | -4.3% |
+| `+ c=10 + beta1=0.95` | 0.08955 | 0.00177 | +1.9% |
+
+对比 batch 8 时 `c_warmup` 的 -16.3%，batch 2 只剩 -2.1%，已在种子噪声量级。其余几项（`schedulefree_c`、`cautious`、`beta1=0.95`）差异都在 ±5% 以内，3 个种子分不出显著性。
+
+复现：`python tools/experiments/a3_sweep.py --steps 600 --seeds 3 --batch 2`。
+
 注意这是 0.26M 参数的玩具 UNet，不能外推到 Flux。它证明的是"分模块独立 `d` 不是免费的"，不是"在 DiT 上一定没用"。
 
 ---
