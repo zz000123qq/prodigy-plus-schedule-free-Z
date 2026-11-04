@@ -284,8 +284,11 @@ class CoreOptimiser(torch.optim.Optimizer):
         d_numerator = group['d_numerator']
         d_numerator *= beta3
 
-        d_numerator_item = running_d_numerator.item()
-        d_denom_item = running_d_denom.item()
+        # Single device-to-host transfer for both stats (was two .item() calls,
+        # i.e. two full pipeline stalls per optimiser step).
+        d_numerator_item, d_denom_item = torch.stack(
+            (running_d_numerator, running_d_denom)
+        ).tolist()
 
         # Prevent the accumulation of negative values in the numerator in early training.
         # We still allow negative updates once progress starts being made, as this is 
@@ -399,16 +402,19 @@ class CoreOptimiser(torch.optim.Optimizer):
 
             if group['use_speed']:
                 beta = 1 - (k ** -0.75)
+                # Keep these scalars on-device. Storing them via .item() stalls the
+                # pipeline three times per parameter per step, which also makes the
+                # step impossible to capture with CUDA graphs.
                 x0_dot = state.get('exp_avg_x0_dot', x0_dot) * beta + x0_dot * (1 - beta)
-                state['exp_avg_x0_dot'] = x0_dot.item()
+                state['exp_avg_x0_dot'] = x0_dot
 
                 # Always normalise by largest displacement. This is mainly to keep the numerator stable
                 # when weight decay is applied.
                 x0_minus_l1_norm = x0_minus.abs().sum().clamp_min(state.get('max_x0_minus_l1_norm', 1e-8))
-                state['max_x0_minus_l1_norm'] = x0_minus_l1_norm.item()
+                state['max_x0_minus_l1_norm'] = x0_minus_l1_norm
 
                 x0_minus_l2_norm = x0_minus.norm().clamp_min(state.get('max_x0_minus_l2_norm', 1e-8))
-                state['max_x0_minus_l2_norm'] = x0_minus_l2_norm.item()
+                state['max_x0_minus_l2_norm'] = x0_minus_l2_norm
 
                 # Penalise d as displacement increases. This helps prevent pathologic d growth.
                 d_update /= x0_minus_l2_norm.add(1).square()
@@ -416,8 +422,9 @@ class CoreOptimiser(torch.optim.Optimizer):
                 # d_denom is unused by SPEED, so use it instead for logging l2.
                 running_d_denom.add_(x0_minus_l2_norm)
 
-                # Normalise.
-                x0_dot /= x0_minus_l1_norm
+                # Normalise. x0_dot is kept in state, so divide into a new tensor
+                # rather than in-place.
+                x0_dot = x0_dot / x0_minus_l1_norm
             else:
                 _, _, beta3 = self.get_betas(group)
                 running_d_denom.add_(state['s'].mul_(beta3).add_(sliced_grad, alpha=d_update).abs().sum())
