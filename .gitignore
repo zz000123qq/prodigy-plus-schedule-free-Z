@@ -9,3 +9,6 @@ venv/
 # 论文原文只作本地参考，不入库
 docs/papers/
 *.pdf
+
+# a1_denoise.py 运行时导出的上游 v2.0.1 源码
+.oldver/
