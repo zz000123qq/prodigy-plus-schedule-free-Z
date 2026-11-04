@@ -53,6 +53,15 @@ class CoreOptimiser(torch.optim.Optimizer):
             self.log(f"'use_grams' has been disabled (mutually exclusive with 'use_cautious').")
             kwargs['use_grams'] = False
 
+        # ADOPT is defined around the first moment: it normalises the update by the
+        # second moment from *before* the step and then clamps at k**0.25. The
+        # schedule-free path keeps no first moment and applies no clamp, so turning
+        # it on there gives something else. Warn rather than let it pass silently.
+        if kwargs['use_adopt'] and kwargs['use_schedulefree']:
+            self.log("WARNING: 'use_adopt' is only partially implemented with 'use_schedulefree' -- "
+                     "no first moment and no clamp at k**0.25 on that path. "
+                     "Set 'use_schedulefree=False' to get ADOPT as published.")
+
         if kwargs['use_focus']:
             if kwargs['factored']:
                 self.log(f"'factored' has been disabled (incompatible with 'use_focus').")

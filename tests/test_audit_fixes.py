@@ -12,6 +12,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from prodigyplus.core_optimiser import CoreOptimiser  # noqa: E402
 from prodigyplus.prodigy_plus_schedulefree import ProdigyPlusScheduleFree  # noqa: E402
 
 torch.manual_seed(0)
@@ -268,6 +269,33 @@ def test_schedulefree_r_weights_recent_steps_more():
     boosted = ckp1_at(10, 1.0)
     print(f"    ckp1 at k=10: r=0 {base:.4f} -> r=1 {boosted:.4f} (ratio {boosted/base:.2f}, expect ~2)")
     assert 1.6 < boosted / base < 2.4, "r=1 should roughly double the weight given to recent steps"
+
+
+# -------------------------------------------------- partial-feature warnings
+
+def test_adopt_warns_on_the_schedulefree_path_only():
+    """ADOPT on the schedule-free path has no first moment and no clamp, so the
+    optimiser must say so instead of silently doing something else."""
+    msgs = []
+    orig = CoreOptimiser.log
+    CoreOptimiser.log = lambda self, msg: msgs.append(str(msg))
+    try:
+        ProdigyPlusScheduleFree(_make_model().parameters(), lr=1.0, use_adopt=True)
+        sf_warned = [m for m in msgs if "use_adopt" in m]
+        print(f"    schedule-free path: {len(sf_warned)} warning(s)")
+
+        msgs.clear()
+        ProdigyPlusScheduleFree(
+            _make_model().parameters(), lr=1.0, use_adopt=True, use_schedulefree=False,
+        )
+        plain = [m for m in msgs if "use_adopt" in m]
+        print(f"    prodigy-only path:  {len(plain)} warning(s)")
+    finally:
+        CoreOptimiser.log = orig
+
+    assert sf_warned, "no warning when use_adopt is combined with use_schedulefree"
+    assert any("clamp" in m for m in sf_warned), "warning should name the missing clamp"
+    assert not plain, "use_adopt alone must not warn"
 
 
 # ------------------------------------------------------------ validation

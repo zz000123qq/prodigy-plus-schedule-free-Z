@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 would be nice but recent torch wheels no longer publish for it.
+        python-version: ["3.10", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install torch (CPU)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Regression tests
+        run: python tests/test_audit_fixes.py
+
+      - name: Logic checks (no torch needed, but cheap)
+        run: |
+          python tools/logic_checks/sim_step_counter.py
+          python tools/logic_checks/sim_weight_sum.py
+
+      - name: Build the wheel
+        run: python -m pip wheel . --no-deps --no-build-isolation -w dist

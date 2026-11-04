@@ -97,7 +97,7 @@ for epoch in range(epochs):
 | `use_speed` | 作者自创。省显存、尺度不敏感，但**与 weight_decay 同用易失稳**，超长训练也容易飘 |
 | `use_orthograd` | 用正交于权重方向的梯度分量更新。与权重平行的分量会被完全丢弃 |
 | `use_focus` | **强制关闭 `factored`（显存上升）并禁用 Adam-atan2** |
-| `use_cautious` | C-Optim。注意：**SF 模式下是半实现**（见第四节第 2 条） |
+| `use_cautious` | C-Optim。SF 模式下掩码只作用于 `y`（跟上游参考实现一致，见第四节第 2 条） |
 | `use_grams` | Grams，问题同 `use_cautious`（二者互斥，同开会自动关 grams） |
 | `use_adopt` | ADOPT 的**残缺实现**（见第四节第 3 条） |
 
@@ -110,11 +110,11 @@ for epoch in range(epochs):
 1. **默认配置下没有一阶动量。**
    `use_schedulefree=True` 时 `initialise_state` 只建 `z`，不建 `exp_avg`。所以 `use_cautious` / `use_grams` / `use_adopt` 这些**依赖动量的技巧全部退化**——docstring 里也写了 "we do not have access to a first moment"。要用它们，实际得设 `use_schedulefree=False`。
 
-2. **SF 模式下 `cautious` / `grams` 只过滤了一半。**
-   `update_params` 先 `z.sub_(update)`，之后才给 `u` 上掩码。结果是 **z 吃未过滤更新、y 吃过滤后更新**，与 C-Optim 本意不符。纯 Prodigy 模式是完整的。
-   *没有修*：修它需要决定不同系数下 `z` 和 `y` 如何重组掩码后的方向，手上没有参考实现可对照，不改就是在猜。
+2. **SF 模式下 `cautious` / `grams` 只作用于 `y`，不作用于 `z`。**
+   `update_params` 先 `z.sub_(update)`，之后才给 `u` 上掩码。所以 **z 吃未过滤更新、y 吃过滤后更新**。
+   这**不是本库的疏漏**：代码里引的上游参考实现（facebookresearch/schedule_free PR #54）就是这么写的，PR 里的原话是"z 的更新不含动量项，直接给它上 cautious 掩码没有意义，所以把 cautious 操作放在 y 更新上"。本库与之一致，未做改动。纯 Prodigy 模式是完整的。
 
-3. **`use_adopt` 的 clamp 只在纯 Prodigy 模式存在**（`clamp_range` 是 k 的 0.25 次方），SF 模式没有。
+3. **`use_adopt` 在 SF 模式下只是半实现**：那条路径既没有一阶动量，也没有 ADOPT 的 `k**0.25` 裁剪。构造时会打印警告。要按论文用 ADOPT，请设 `use_schedulefree=False`。
 
 4. **bf16 参数不走 `out=` 优化**，仍走原来的拷贝路径。原因见第五节 5.2。
 
