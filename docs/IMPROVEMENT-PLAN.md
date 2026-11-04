@@ -39,7 +39,7 @@
 - **判据**：`mask` 在 330-331 完整计算并归一化，332 未引用，333 直接 `del`。同函数 `else` 分支是 `grad.copy_(exp_avg)`，SF 路径对应写法是 `u.mul_(mask)`。这是死代码，不可能是设计意图。
 - **影响**：更新量级从 `O(1)` 变成 `O(|g|)`。典型 `|g|~1e-2` 时步长塌成 1/100 → Prodigy 误判"进展不足" → `d` 过估。仅在 `use_schedulefree=False` + `use_cautious=True` 时触发。
 - **修法**：`grad.copy_(exp_avg).mul_(mask)`
-  - ⚠️ **不是** `grad.mul_(mask)`——此时 `grad` 仍是原始梯度，那样写会丢掉一阶动量。
+  - 注意：不是 `grad.mul_(mask)`——此时 `grad` 仍是原始梯度，那样写会丢掉一阶动量。
 - **验收**：`use_cautious=True` 下 `update` 的 RMS ≈ `use_cautious=False` 时的 RMS（同一组随机输入，误差 <5%）。
 
 ### T2 SPEED 模式的 `.item()` 主机同步 【P1，必修】
@@ -149,19 +149,19 @@
 
 | # | 修正 | 本库现状 | 改造量 |
 |---|---|---|---|
-| 1 | 恢复内层动量（β₁=0.75~0.9） | SF 路径无 `exp_avg`，`step_param_schedulefree` 不调 `update_first_moment` | 大：需新增 `inner_beta` 并给 SF 路径建一阶动量（+50% 状态显存） |
+| 1 | 恢复内层动量（β1=0.75~0.9） | SF 路径无 `exp_avg`，`step_param_schedulefree` 不调 `update_first_moment` | 大：需新增 `inner_beta` 并给 SF 路径建一阶动量（+50% 状态显存） |
 | 2 | Polyak 步长 + 平滑 L1 梯度范数 | 用 Prodigy 的 `num/denom` 比率 | 大：新增 `lr_mode='polyak'` 平行分支 |
-| 3 | c-warmup（延迟启用平均） | 从第 1 步就平均 | ✅ **已完成**：`c_warmup=N` 参数，默认 0（行为不变） |
+| 3 | c-warmup（延迟启用平均） | 从第 1 步就平均 | **已完成**：`c_warmup=N` 参数，默认 0（行为不变） |
 | 4 | 外层 β 退火（0.8/0.9 → 0.965） | **结构上做不到**：`beta1` 同时是内层动量系数与 SF 平均系数 | 依赖 #1 解耦后才能做 |
-| 5 | 幂加权平均（`w = t^r · γ^p`） | 只有 `w = dlr²` | ✅ **已完成**：`schedulefree_r=r`，默认 0。论文说 r=1 仅适合长跑 |
-| 6 | 全解耦 AdamC WD（γ²λ） | `weight_decay_by_lr=True` 时是 γλ | 小：改成 `decay * dlr` → `decay * dlr**2`，但 λ 需放大到 5~50 |
+| 5 | 幂加权平均（`w = t^r · γ^p`） | 只有 `w = dlr^2` | **已完成**：`schedulefree_r=r`，默认 0。论文说 r=1 仅适合长跑 |
+| 6 | 全解耦 AdamC WD（γ^2λ） | `weight_decay_by_lr=True` 时是 γλ | 小：改成 `decay * dlr` → `decay * dlr**2`，但 λ 需放大到 5~50 |
 
 **依赖顺序**：#1 必须先做（#4 依赖它）。#6 独立。
 
 **状态**：#3 和 #5 已作为可选开关实现（默认关闭，不影响现有数值）。#1 / #2 / #4 / #6 未做。
 #1 需要给 SF 路径补 `exp_avg`，实测会多占 85% 的状态显存（`exp_avg` 与 `z` 同尺寸），对显存紧张的 LoRA 场景要权衡。
 
-**收益（论文口径）**：长跑 1000 tokens/参数下，相对最强 Linear Decay 基线训练时间 −31%。
+**收益（论文口径）**：长跑 1000 tokens/参数下，相对最强 Linear Decay 基线训练时间 -31%。
 
 ---
 
@@ -183,14 +183,14 @@ main（上游基线，只读）
 
 | 项 | 计划 | 状态 | 证据 |
 |---|---|---|---|
-| T1 `use_cautious` 死掩码 | 修 | ✅ 已修 + 实测 | `zero_frac` 0.000 → 0.679；步长 5.48e-4 → 1.74e-2（旧版仅为 unmasked 对照的 1/20） |
-| T2 SPEED 每参数 `.item()` | 合并 | ✅ 已修 + 实测 | 单步同步次数 14 → 1（4 个参数） |
-| T3 FBP 参数计数器 | 修 | ✅ 已修 + 实测 | 9/10 有梯度时 `k` 每轮 +1 |
-| T4 `orthograd` 非连续张量 | 修 | ✅ 已修 + 实测 | `channels_last` 权重：`RuntimeError` → 正常。（原列的 NaN 一说不成立，见下表） |
-| T5 `sync_d_stats` | 实现、不验证 | ⚠️ 已实现，仅单卡冒烟 | 单卡 `dist` 未初始化时为空操作，整步跑通；按约定不做多卡验证 |
-| T6 工程元数据 | 全部 | ✅ 已完成 | `pip wheel` 构建通过；import 正常；version 2.1.0 |
-| 回归测试 | 建 `tests/` | ✅ 9 条 | `python tests/test_audit_fixes.py` → 9/9，且逐条对照 v2.0.1 验过判别力 |
-| L2 ScheduleFree+ 六项 | 不做 | ⬜ 未开始 | 见 §六，需单独立项 |
+| T1 `use_cautious` 死掩码 | 修 | 已修，已实测 | `zero_frac` 0.000 → 0.679；步长 5.48e-4 → 1.74e-2（旧版仅为 unmasked 对照的 1/20） |
+| T2 SPEED 每参数 `.item()` | 合并 | 已修，已实测 | 单步同步次数 14 → 1（4 个参数） |
+| T3 FBP 参数计数器 | 修 | 已修，已实测 | 9/10 有梯度时 `k` 每轮 +1 |
+| T4 `orthograd` 非连续张量 | 修 | 已修，已实测 | `channels_last` 权重：`RuntimeError` → 正常。（原列的 NaN 一说不成立，见下表） |
+| T5 `sync_d_stats` | 实现、不验证 | 已实现，仅单卡冒烟（未验证） | 单卡 `dist` 未初始化时为空操作，整步跑通；按约定不做多卡验证 |
+| T6 工程元数据 | 全部 | 已完成 | `pip wheel` 构建通过；import 正常；version 2.1.0 |
+| 回归测试 | 建 `tests/` | 14 条 | `python tests/test_audit_fixes.py` → 14/14，且逐条对照 v2.0.1 验过判别力 |
+| L2 ScheduleFree+ 六项 | 不做 | 未开始 | 见 §六，需单独立项 |
 
 **执行中修正的计划内容**（原计划有误，已按实测改写）：
 

@@ -3,11 +3,13 @@
 把 **Prodigy**（自动估计学习率）和 **Schedule-Free**（免学习率调度器）组合起来的 PyTorch 优化器。
 
 - **上游**：[LoganBooker/prodigy-plus-schedule-free](https://github.com/LoganBooker/prodigy-plus-schedule-free)，Apache-2.0，最后更新于 2025-09
-- **本仓库**：个人维护的 fork，分支 `audit-fix`
+- **本仓库**：[zz000123qq/prodigy-plus-schedule-free-Z](https://github.com/zz000123qq/prodigy-plus-schedule-free-Z)（fork，分支 `audit-fix`）
 - **状态**：实验性。本文按**本分支代码的实际行为**写，与上游 README 措辞不一致处，以本文为准
 - **不做**：不发布到 PyPI，不向上游提 PR
 
 版本号只在 `prodigyplus/_version.py` 里维护（当前 `2.1.0`），`setup.py` / `pyproject.toml` 都从它读，不随每次提交变动。
+
+> 编码说明：本文为 UTF-8（无 BOM），且刻意避开 GBK 覆盖范围之外的符号，中文 Windows 编辑器打开不会出现方框。
 
 ---
 
@@ -52,7 +54,7 @@ for epoch in range(epochs):
 
 ## 三、参数速查
 
-完整 27 个参数的逐条说明在 `prodigy_plus_schedulefree.py` 的 docstring 里。这里只列实际会动的。
+完整 29 个参数的逐条说明在 `prodigy_plus_schedulefree.py` 的 docstring 里。这里只列实际会动的。
 
 ### 3.1 常用
 
@@ -62,13 +64,13 @@ for epoch in range(epochs):
 | `betas` | `(0.9, 0.99)` | Schedule-Free 场景社区更推荐 `(0.95, 0.99)`，上游仍保留 0.9 作默认 |
 | `weight_decay` | `0.0` | 解耦权重衰减 |
 | `weight_decay_by_lr` | `True` | WD 是否乘自适应学习率（PyTorch AdamW 的行为） |
-| `d0` | `1e-6` | Prodigy 的初始学习率猜测。LR 涨不上去试 `1e-5`/`1e-4`，一直偏大试 `1e-7` |
+| `d0` | `1e-6` | Prodigy 的初始学习率猜测。LR 涨不上去试 `1e-5` / `1e-4`，一直偏大试 `1e-7` |
 | `d_coef` | `1.0` | 调 LR 的首选旋钮，`0.5` / `2.0` 都常用 |
-| `d_limiter` | `True` | 限制 `d` 每步涨幅（不超过 2^0.25 倍） |
+| `d_limiter` | `True` | 限制 `d` 每步涨幅（不超过 2 的 0.25 次方倍） |
 | `prodigy_steps` | `0` | 大于 0 时在第 N 步**冻结** `d` 并释放 Prodigy 专用显存。长跑 / 扩散模型常用 |
-| `schedulefree_c` | `0` | Refined SF-Adam 的平均强度。`0` = 关闭（走原始 SF 规则）。小 batch 短跑试 6~12，长跑试 50~200 |
-| `c_warmup` | `0` | ScheduleFree+ 的延迟平均：前 N 步不平均（`y` 直接跟随 `z`）。论文建议取约 2×LR warmup 长度。只多一个计数器，零显存 |
-| `schedulefree_r` | `0.0` | 平均权重改成 `w = k^r · dlr²`。**论文只在 >30B token 的长跑用 r=1，短跑用 r=1 反而略差**，所以默认 0 |
+| `schedulefree_c` | `0` | Refined SF-Adam 的平均强度。`0` = 关闭（走原始 SF 规则）。小 batch 短跑试 6 到 12，长跑试 50 到 200 |
+| `c_warmup` | `0` | ScheduleFree+ 的延迟平均：前 N 步不平均（`y` 直接跟随 `z`）。论文建议取约 2 倍 LR warmup 长度。只多一个计数器，零显存 |
+| `schedulefree_r` | `0.0` | 平均权重改成 `k 的 r 次方 乘 dlr^2`。**论文只在超过 30B token 的长跑用 r=1，短跑用 r=1 反而略差**，所以默认 0 |
 | `eps` | `1e-8` | 设成 `None` 改用 **Adam-atan2**（尺度不变、免调 eps），会顺带关掉 `use_stableadamw` |
 | `use_schedulefree` | `True` | 设 `False` 退回纯 Prodigy，此时**必须自己配调度器**（cosine 推荐） |
 
@@ -88,14 +90,14 @@ for epoch in range(epochs):
 
 ### 3.3 实验性 —— 建议先不用
 
-都来自 2024~2025 年的论文小技巧，作者自己在 docstring 里写了 "may have a limited effect"。
+都来自 2024 到 2025 年的论文小技巧，作者自己在 docstring 里写了 "may have a limited effect"。
 
 | 参数 | 在本库的真实状态 |
 |---|---|
 | `use_speed` | 作者自创。省显存、尺度不敏感，但**与 weight_decay 同用易失稳**，超长训练也容易飘 |
 | `use_orthograd` | 用正交于权重方向的梯度分量更新。与权重平行的分量会被完全丢弃 |
 | `use_focus` | **强制关闭 `factored`（显存上升）并禁用 Adam-atan2** |
-| `use_cautious` | C-Optim。⚠️ **SF 模式下是半实现**（见第四节第 2 条） |
+| `use_cautious` | C-Optim。注意：**SF 模式下是半实现**（见第四节第 2 条） |
 | `use_grams` | Grams，问题同 `use_cautious`（二者互斥，同开会自动关 grams） |
 | `use_adopt` | ADOPT 的**残缺实现**（见第四节第 3 条） |
 
@@ -112,13 +114,13 @@ for epoch in range(epochs):
    `update_params` 先 `z.sub_(update)`，之后才给 `u` 上掩码。结果是 **z 吃未过滤更新、y 吃过滤后更新**，与 C-Optim 本意不符。纯 Prodigy 模式是完整的。
    *没有修*：修它需要决定不同系数下 `z` 和 `y` 如何重组掩码后的方向，手上没有参考实现可对照，不改就是在猜。
 
-3. **`use_adopt` 的 clamp 只在纯 Prodigy 模式存在**（`clamp_range = k**0.25`），SF 模式没有。
+3. **`use_adopt` 的 clamp 只在纯 Prodigy 模式存在**（`clamp_range` 是 k 的 0.25 次方），SF 模式没有。
 
 4. **bf16 参数不走 `out=` 优化**，仍走原来的拷贝路径。原因见第五节 5.2。
 
-5. **`prodigy_steps` 取总步数 5~25% 的老建议已作废**（上游新版自己说"现在不需要了"）。
+5. **`prodigy_steps` 取总步数 5% 到 25% 的老建议已作废**（上游新版自己说"现在不需要了"）。
 
-6. **MNIST 那组 98.5%~99.3% 是 v1.x 时代的数据**。v2.0 把内部整个重写过（上游明确写了"不要用新版续训老版本"），这组数字不代表 2.x 效果，本分支也没复现。
+6. **MNIST 那组 98.5% 到 99.3% 的准确率是 v1.x 时代的数据**。v2.0 把内部整个重写过（上游明确写了"不要用新版续训老版本"），这组数字不代表 2.x 效果，本分支也没复现。
 
 7. **Muon 已被上游移除**，且不建议加回来：正交化输出谱范数固定，与 Prodigy 依赖二阶矩口径的 `d` 直接冲突。
 
@@ -130,7 +132,7 @@ for epoch in range(epochs):
 
 ### 5.1 step 到底多贵
 
-33.6M 参数（两个 4096×4096 Linear），只测 `opt.step()`：
+33.6M 参数（两个 4096 x 4096 的 Linear），只测 `opt.step()`：
 
 | 优化器 | step 耗时 |
 |---|---|
@@ -139,7 +141,7 @@ for epoch in range(epochs):
 | `torch.optim.AdamW(fused=True)` | 3.84 ms |
 | **本库（SF 默认）** | **10.57 ms** |
 
-约为普通 AdamW 的 **1.44×**、fused AdamW 的 **2.75×**。差距来自每参数约 20 次全量张量遍历（AdamW 约 5 次），这是算法本身（SF 的 y/z 双缓冲 + Prodigy 统计量）决定的。
+约为普通 AdamW 的 **1.44 倍**、fused AdamW 的 **2.75 倍**。差距来自每参数约 20 次全量张量遍历（AdamW 约 5 次），这是算法本身（SF 的 y/z 双缓冲 + Prodigy 统计量）决定的。
 
 > 注意：小模型上 `step` 可能占到总时间 70% 以上，那是 Windows WDDM 每 kernel 开销高放大的结果。真实 UNet / SDXL LoRA 训练里 fwd+bwd 会占绝对多数，别拿这个比例外推。
 
@@ -147,39 +149,40 @@ for epoch in range(epochs):
 
 | 优化 | 效果 |
 |---|---|
-| `use_speed` 去掉每参数 3 次 `.item()` | 单步同步次数 14 → 1（4 参数场景） |
-| `update_()` 支持 `out=`，纯 Prodigy 路径直接写进梯度缓冲 | fp32 实测 step **10.82 → 10.01 ms（+7.5%）**；bf16 不变 |
+| `use_speed` 去掉每参数 3 次 `.item()` | 单步同步次数从 14 降到 1（4 参数场景） |
+| `update_()` 支持 `out=`，纯 Prodigy 路径直接写进梯度缓冲 | fp32 实测 step 从 10.82 降到 10.01 ms（快 7.5%）；bf16 不变 |
 
-`out=` 只在 `exp_avg.dtype == 梯度缓冲 dtype`（即 fp32 参数）时启用。因为 `torch.div(a, b, out=c)` 按**输入的公共 dtype** 计算：1D 参数不参与分解，`exp_avg_sq` 保持 bf16，此时会在 bf16 里除完再转 fp32，比"先转 fp32 再除"少一个 ulp。
+`out=` 只在 `exp_avg.dtype` 与梯度缓冲的 dtype 一致（即 fp32 参数）时启用。因为 `torch.div(a, b, out=c)` 按**输入的公共 dtype** 计算：1D 参数不参与分解，`exp_avg_sq` 保持 bf16，此时会在 bf16 里除完再转 fp32，比"先转 fp32 再除"少一个最小精度单位。
 
 ### 5.3 评估过但没做的
 
 | 想法 | 否决原因 |
 |---|---|
 | `torch.compile(opt.step)` | 三种模式全部直接抛 `AssertionError: Attempted setattr on a user-defined object...`，位置在 `on_start_step` 的属性赋值。不是 graph break，是硬报错。另外本机 Triton 编译不出 kernel（MSVC 那步失败） |
-| 把 RMS 缩放折进 `y.sub_` 的 `alpha` | `alpha` 传 0 维 tensor 会触发 D2H 同步，实测每次调用多 **24µs**，参数一多就是净亏 |
-| `y.mul_(1-decay)` + `y.sub_` 合成 `addcmul_` | `addcmul_` 只能做一次乘积；且 `weight_decay=0` 时代码本来就跳过那一步 |
+| 把 RMS 缩放折进 `y.sub_` 的 `alpha` | `alpha` 传 0 维 tensor 会触发主机同步，实测每次调用多 24 微秒，参数一多就是净亏 |
+| `y.mul_(1-decay)` 与 `y.sub_` 合成 `addcmul_` | `addcmul_` 只能做一次乘积；且 `weight_decay=0` 时代码本来就跳过那一步 |
+| 二阶矩做 8-bit 量化 | 默认配置下解耦后的二阶矩只占状态 0.04%（32KB / 75.7MB），大头是 `z`（85%）。只有主动关掉 `factored` 时量化二阶矩才有意义 |
 
 ---
 
 ## 六、与 ScheduleFree+（2026）的差距
 
-上游停在 2025 年中的 *Refined SF-Adam*（arXiv 2507.09846）。2026-08 Defazio 本人的 **ScheduleFree+**（arXiv 2605.19095）给出 6 项让它扩展到 LLM 的修正，本库一项都没有：
+上游停在 2025 年中的 *Refined SF-Adam*（arXiv 2507.09846）。2026-08 Defazio 本人的 **ScheduleFree+**（arXiv 2605.19095）给出 6 项让它扩展到 LLM 的修正：
 
 | # | 修正 | 本库现状 |
 |---|---|---|
-| 1 | 恢复内层动量（β₁≈0.75~0.9） | SF 路径无 `exp_avg`，大 batch 会出现 scaling cliff |
-| 2 | Polyak 步长 + 平滑 L1 梯度范数 | 走的是 Prodigy 的 num/denom 比率 |
-| 3 | c-warmup（延迟启用平均） | ✅ **已提供** `c_warmup=N`，默认 0（关闭，行为不变） |
-| 4 | 外层 β 退火（0.8/0.9 → 0.965） | **结构上做不到**：`beta1` 同时是内层动量系数和 SF 平均系数 |
-| 5 | 幂加权平均（`w = t^r·γ^p`） | ✅ **已提供** `schedulefree_r=r`，默认 0。注意论文说 r=1 只适合长跑，短跑反而略差 |
-| 6 | 全解耦 AdamC 权重衰减（γ²λ） | 是 γλ |
+| 1 | 恢复内层动量（beta1 约 0.75 到 0.9） | 未做。SF 路径无 `exp_avg`，大 batch 会出现 scaling cliff；补上会多占 85% 的状态显存 |
+| 2 | Polyak 步长 + 平滑 L1 梯度范数 | 未做。走的是 Prodigy 的 num/denom 比率 |
+| 3 | c-warmup（延迟启用平均） | **已实现** `c_warmup=N`，默认 0（关闭，行为不变） |
+| 4 | 外层 beta 退火（0.8/0.9 转到 0.965） | 未做，且**结构上做不到**：`beta1` 同时是内层动量系数和 SF 平均系数 |
+| 5 | 幂加权平均（`w = t 的 r 次方`） | **已实现** `schedulefree_r=r`，默认 0。注意论文说 r=1 只适合长跑，短跑反而略差 |
+| 6 | 全解耦 AdamC 权重衰减 | 未做。现在是 gamma 乘 lambda，论文要 gamma 平方乘 lambda |
 
-其中 #3 和 #5 是纯加法、不改默认行为，已做成可选开关（实测：`c_warmup=5` 时前 5 步 `y` 与 `z` 完全相等，第 6 步恢复平均；`schedulefree_r=1` 时 `ckp1` 在 k=10 从 0.100 升到 0.182）。
+#3 和 #5 是纯加法、不改默认行为，已做成可选开关。实测：`c_warmup=5` 时前 5 步 `y` 与 `z` 完全相等、第 6 步恢复平均；`schedulefree_r=1` 时 `ckp1` 在 k=10 从 0.100 升到 0.182。
 
-剩下 4 项未做，其中 #1 和 #4 是结构性问题（`beta1` 一个旋钮两用），#1 还要多占 85% 的状态显存（`exp_avg` 与 `z` 同尺寸）。
+剩下 4 项未做。#1 和 #4 是结构性问题（`beta1` 一个旋钮两用），#1 还要多占 85% 的状态显存（`exp_avg` 与 `z` 同尺寸）。
 
-论文口径的收益（省 31% 训练时间）来自 **LLM 长跑**场景，是否适用于 1000~3000 步的 LoRA 微调没有证据，别直接套。
+论文口径的收益（省 31% 训练时间）来自 **LLM 长跑**场景，是否适用于 1000 到 3000 步的 LoRA 微调没有证据，别直接套。
 
 ---
 
@@ -201,7 +204,7 @@ for epoch in range(epochs):
 python tests/test_audit_fixes.py      # 14 条用例，不需要 pytest
 ```
 
-覆盖：cautious 掩码、SPEED 同步次数、FBP 计数器、orthograd 非连续张量、`out=` 与原地路径等价、ckp1 = 1/k、`c_warmup` 期间 `y==z`、`schedulefree_r` 的权重变化、train/eval 往返、单卡无进程组、CUDA bf16 整步、参数校验。
+覆盖：cautious 掩码、SPEED 同步次数、FBP 计数器、orthograd 非连续张量、`out=` 与原地路径等价、ckp1 = 1/k、`c_warmup` 期间 y 等于 z、`schedulefree_r` 的权重变化、train/eval 往返、单卡无进程组、CUDA bf16 整步、参数校验。
 
 `tools/logic_checks/` 下是两份不依赖 torch 的逻辑复现脚本（步计数器、`weight_sum`），用来在没装 torch 的环境里验证行为契约。
 
