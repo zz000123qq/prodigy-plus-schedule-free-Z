@@ -67,6 +67,10 @@ class CoreOptimiser(torch.optim.Optimizer):
 
         self.print_dtype_warning = True
         self.print_version_check = True
+        self.print_step_boundary_warning = True
+        # Parameters already visited in the current step. Used to detect a step that
+        # never reached its full count (see on_start_step).
+        self._params_seen_this_step = set()
 
         split_groups = defaults['split_groups']
         if split_groups and len(self.param_groups) == 1:
@@ -334,10 +338,13 @@ class CoreOptimiser(torch.optim.Optimizer):
         group['d_prev'] = group['d']
         group['d'] = d
 
-    def on_start_step(self):
+    def _total_params(self):
+        return sum(len(group['params']) for group in self.param_groups)
+
+    def on_start_step(self, p=None):
         if not self.parameters_to_process:
             # Optimiser hasn't run yet (or is starting a new step), so initialise.
-            self.parameters_to_process = sum(len(group['params']) for group in self.param_groups)
+            self.parameters_to_process = self._total_params()
 
             # Check if resuming training started on an older version.
             if getattr(self, "print_version_check", True):
@@ -347,11 +354,35 @@ class CoreOptimiser(torch.optim.Optimizer):
                     expected, actual = '.'.join(map(str, self.VERSION)), '.'.join(map(str, version)) if version else '<= 1.9.2'
                     self.log(f"Optimiser version mismatch or missing: expected {expected}, got {actual}. Training resume is not supported between versions!")
                 self.print_version_check = False
+        elif p is not None and id(p) in self._params_seen_this_step:
+            # The same parameter has come round twice, so the previous step never
+            # reached its full count. With fused backward pass the parameters are
+            # driven by gradient hooks rather than by step(), and a parameter that
+            # never receives a gradient never fires a hook, so the count can never
+            # reach zero on its own. Close the previous step with the stats that were
+            # collected (parameters without a gradient contribute nothing anyway) and
+            # start a fresh one.
+            if self.print_step_boundary_warning:
+                self.log("Parameter seen twice within one step -- previous step was closed early. "
+                         "This is expected when using fused_back_pass with parameters that "
+                         "never receive a gradient.")
+                self.print_step_boundary_warning = False
 
-    def on_end_step(self):
+            self.parameters_to_process = 1
+            self.on_end_step(p)
+            # on_end_step() zeroed the counter. Re-arm it for the new step so that the
+            # on_end_step() at the end of this parameter decrements from the full count.
+            self.parameters_to_process = self._total_params()
+
+        if p is not None:
+            self._params_seen_this_step.add(id(p))
+
+    def on_end_step(self, p=None):
         self.parameters_to_process -= 1
 
-        if self.parameters_to_process == 0:
+        if self.parameters_to_process <= 0:
+            self.parameters_to_process = 0
+            self._params_seen_this_step.clear()
             first_group = self.param_groups[0]
 
             # Update d for next optimiser step.

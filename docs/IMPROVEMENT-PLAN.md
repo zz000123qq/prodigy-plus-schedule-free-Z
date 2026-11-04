@@ -51,18 +51,22 @@
 - **兼容性**：`load_state_dict` 旧 checkpoint 时这些键是 float，`clamp_min(float)` 依然可用，仅首次 step 后自动转回 tensor。
 - **验收**：`use_speed=True` 时每步 `.item()` / `.tolist()` 调用次数为 1（可用 monkeypatch 计数）。
 
-### T3 `fused_back_pass` 下参数计数器错位 【P1，必修】
+### T3 `fused_back_pass` 下参数计数器错位 【P1，已修】
 
-- **位置**：`prodigyplus/core_optimiser.py:329-347`（`on_start_step` / `on_end_step`）
-- **现状**：计数器按**全部参数**（含冻结层）初始化，但 `fused_back_pass=True` 时 `step()` 直接 `break`，靠反向钩子逐个触发 `step_param`。若驱动方只为有梯度的参数调钩子，计数永远差几个：
-  ```
-  step1: 重置为 10 → 处理 9 个 → 剩 1
-  step2: 1 为 truthy 不重置 → 递减到 -8，中途路过 0 触发一次（只有 1/10 统计）
-  step3+: 负数只会更负 → 永不触发
-  ```
-- **影响**：`k` 永不递增 → Prodigy 冻结；`weight_sum` 冻结 → `ckp1` 冻结 → Schedule-Free 平均停摆。**静默失效，训练能跑完但结果不对。**
-- **修法**：用"本 step 已见参数集合"自愈。`on_start_step(p)` 中发现 `id(p)` 已在集合里，说明上一 step 没正常收尾 → 强制 `_finish_step()` 再开新 step。
-- **验收**：构造 10 个参数、9 个有梯度的场景，手动驱动 `step_param`，断言 `group['k']` 每轮递增。
+- **位置**：`prodigyplus/core_optimiser.py` 的 `on_start_step` / `on_end_step`
+- **背景**：计数器按**全部参数**（含冻结层）初始化，但 `fused_back_pass=True` 时 `step()` 直接 `break`，靠反向钩子逐个触发 `step_param`。若驱动方只为有梯度的参数调钩子，每轮的实际调用次数就少于计数器初值。
+- **实际症状（已实测，修正早期的"永久冻结"描述）**：计数器归零后，会被**下一个参数的 `on_start_step` 重新初始化**，因此不是冻结，而是**步边界落在任意位置、`k` 的推进速率与真实步数脱钩**。n=10、12 轮的实测：
+
+  | 有梯度参数 | 修复前 k | 修复后 k | 修复前 k/轮 |
+  |---|---|---|---|
+  | 10/10 | 12 | 12 | 1.00 |
+  | 9/10 | 10 | 11 | 0.83 |
+  | 5/10 | 6 | 11 | 0.50 |
+  | 2/10 | 2 | 11 | 0.17 |
+
+- **后果**：`ckp1 = 1/k` 变慢 → Schedule-Free 的平均窗口被拉长；`d` 的统计在错误的参数集上结算；`prodigy_steps` 的触发点整体偏移。**静默失效，训练能跑完但结果不对。**
+- **修法**：引入"本 step 已见参数集合"。`on_start_step(p)` 发现 `id(p)` 已在集合里 → 说明上一步没正常收尾 → 强制收尾并重新上膛。无梯度参数本来就不贡献统计，因此提前收尾是安全的。
+- **验收**：`audit/sim_step_counter.py` —— 任意冻结比例下 `k` 都稳定每轮 +1。
 
 ### T4 `orthograd_` 的数值边界与非连续张量 【P2，必修】
 

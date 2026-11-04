@@ -419,7 +419,7 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
 
     @torch.no_grad()
     def step_param(self, p, group):
-        self.on_start_step()
+        self.on_start_step(p)
 
         if p.grad is not None:
             if group['use_schedulefree']:
@@ -427,4 +427,4 @@ class ProdigyPlusScheduleFree(CoreOptimiser):
             else:
                 self.step_param_prodigy(p, group)
 
-        self.on_end_step()
+        self.on_end_step(p)
