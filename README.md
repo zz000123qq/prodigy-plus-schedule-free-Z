@@ -196,8 +196,6 @@ for epoch in range(epochs):
 |---|---|---|---|---|
 | SNR | 7.82 | 9.33 | 10.52 | 15.57 |
 
-复现：`python tools/experiments/a1_denoise.py --steps 600 --seeds 3 --batch 8`（约 15 分钟）。加 `--quick` 是 150 步单种子。
-
 **按模块拆分组、每组一个 `d`，实测是负收益**（同一任务，把网络拆成 时间步调制 / 卷积块 / 输入输出 三组）：
 
 | 分组方式 | eval loss | ±std | 三组的 `d` 终值 |
@@ -207,8 +205,6 @@ for epoch in range(epochs):
 | 三组 + `split_groups_mean=True` | 0.05800 | 0.00147 | 2.90e-03 / 1.22e-03 / 4.49e-03 |
 
 独立 `d` 让三组步长差出 4 倍，结果比单组差 11.5%，种子方差也翻倍；用调和平均把尺度拉回来后回到与单组持平（0.05800 对 0.05947，差距在种子噪声量级）。这正是本库保留 `split_groups_mean` 的原因。
-
-复现：`python tools/experiments/a2_param_groups.py --steps 600 --seeds 3`。
 
 **`c_warmup` 的收益随 batch 变小而消失。** 同一任务，batch 2（家用显卡的常见区间）重扫：
 
@@ -223,7 +219,7 @@ for epoch in range(epochs):
 
 对比 batch 8 时 `c_warmup` 的 -16.3%，batch 2 只剩 -2.1%，已在种子噪声量级。其余几项（`schedulefree_c`、`cautious`、`beta1=0.95`）差异都在 ±5% 以内，3 个种子分不出显著性。
 
-复现：`python tools/experiments/a3_sweep.py --steps 600 --seeds 3 --batch 2`。
+以上三组实验的脚本放在 `audit-fix` 分支的 `tools/experiments/` 下，默认分支只保留结论，不带实验代码。
 
 注意这是 0.26M 参数的玩具 UNet，不能外推到 Flux。它证明的是"分模块独立 `d` 不是免费的"，不是"在 DiT 上一定没用"。
 
@@ -272,12 +268,7 @@ python tests/test_audit_fixes.py      # 15 条用例，不需要 pytest
 
 CI 在 `.github/workflows/tests.yml`：Python 3.10 / 3.12 / 3.13 加 CPU 版 torch，跑这套用例、两个逻辑脚本和一次 wheel 构建，push 即触发。
 
-另外两份工具：
-
-| 路径 | 用途 |
-|---|---|
-| `tools/logic_checks/` | 不依赖 torch 的逻辑复现（步计数器、`weight_sum`），用来在没装 torch 的环境里验证行为契约 |
-| `tools/experiments/a1_denoise.py` | 端到端对比实验，见 5.4 节。约 15 分钟 |
+`tools/logic_checks/` 下是不依赖 torch 的逻辑复现脚本（步计数器、`weight_sum`），用来在没装 torch 的环境里验证行为契约，CI 也会跑它们。
 
 **未验证**：多卡 `sync_d_stats`——没有多卡环境。
 
@@ -296,7 +287,7 @@ Apache-2.0，见 `LICENSE`。算法来自：
 
 ## 附录：与原始论文的对应（核对用）
 
-本地 `docs/papers/` 存放的是 **arXiv v4（2024-03-19）**，与 ICML 2024 版一致。核对基准就按这一版，注意比它更早的修订里算法编号不同（某些在线渲染器仍显示旧编号，`Algorithm 3` 在那里是 D-Adaptation with Resetting，v4 已删除该内容）。
+核对基准是 **arXiv v4（2024-03-19）**，与 ICML 2024 版一致。注意比它更早的修订里算法编号不同（某些在线渲染器仍显示旧编号，`Algorithm 3` 在那里是 D-Adaptation with Resetting，v4 已删除该内容）。
 
 | 项 | 论文（Alg.3, v4） | 本库实现 | 判定 |
 |---|---|---|---|
